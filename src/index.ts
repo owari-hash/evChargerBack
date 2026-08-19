@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
-import { env } from './config/env';
+import { apiUrl, env, ocppUrl } from './config/env';
 import { connectDatabase, disconnectDatabase } from './lib/db';
 import { logger } from './lib/logger';
 import { createApp } from './api/app';
@@ -65,7 +65,9 @@ async function main(): Promise<void> {
     const wsScheme = env.TLS_ENABLED ? 'wss' : 'ws';
     logger.info(
       `Central System listening on ${scheme}://${env.HTTP_HOST}:${env.HTTP_PORT}  |  ` +
-        `charge points: ${wsScheme}://<host>:${env.HTTP_PORT}${env.OCPP_PATH_PREFIX}/{chargePointId}  |  ` +
+        `REST: ${scheme}://localhost:${env.HTTP_PORT}${env.API_BASE_PATH}  (public: ${apiUrl()})  |  ` +
+        `charge points: ${wsScheme}://localhost:${env.HTTP_PORT}${env.OCPP_PATH_PREFIX}/{chargePointId}  ` +
+        `(public: ${ocppUrl('/{chargePointId}')})  |  ` +
         `security profile ${env.OCPP_SECURITY_PROFILE}`,
     );
   });

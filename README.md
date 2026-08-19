@@ -8,9 +8,9 @@ Charge points connect over WebSocket. Your dashboard, mobile app or billing
 system talks to the REST API. Both are served by the same process on one port.
 
 ```
-charge point  ──ws://host:3000/ocpp/{chargePointId}──►  ┌──────────────┐
+charge point  ──wss://eplug.mn/ocpp/{chargePointId}──►  ┌──────────────┐
                                                         │  this server │──► MongoDB
-dashboard     ──http://host:3000/api/...─────────────►  └──────────────┘
+dashboard     ──https://eplug.mn/api/...─────────────►  └──────────────┘
                    + SSE live event stream
 ```
 
@@ -96,6 +96,28 @@ returned keys, and so on.
   your real PKI material to use your own CA instead.
 - **Security log**: every event is stored with its criticality; query and
   acknowledge them under `/api/security/events`.
+
+---
+
+## Base URL
+
+Every REST route is mounted under `API_BASE_PATH` (default `/api`), so the same
+paths work locally and in production:
+
+| Environment | REST | Charge points |
+|---|---|---|
+| local | `http://localhost:3000/api/...` | `ws://localhost:3000/ocpp/{chargePointId}` |
+| eplug.mn | `https://eplug.mn/api/...` | `wss://eplug.mn/ocpp/{chargePointId}` |
+
+nginx proxies `/api/` to the backend **without stripping the prefix** — the app
+serves `/api` itself — so a client only has to swap the origin. A ready-made site
+config is in [`deploy/nginx-eplug.mn.conf`](deploy/nginx-eplug.mn.conf); install
+it with [`deploy/install-nginx-ubuntu.sh`](deploy/install-nginx-ubuntu.sh) (see
+**TLS** below).
+
+`PUBLIC_BASE_URL` (default `https://eplug.mn`) is the origin the API reports in
+`GET /api` and in the startup log; it does not change routing. Health is served
+at both `/health` and `/api/health` so it stays reachable through the proxy.
 
 ---
 
@@ -220,24 +242,58 @@ sudo systemctl daemon-reload && sudo systemctl enable --now csms
 
 Or with Docker: `docker compose up -d --build` (starts MongoDB too).
 
-### TLS
+### PM2
 
-Either terminate TLS at nginx (keep `TLS_ENABLED=false` and set
-`OCPP_SECURITY_PROFILE=2`) — remember to proxy the WebSocket upgrade:
+`ecosystem.config.cjs` is ready to use instead of systemd:
 
-```nginx
-location /ocpp/ {
-    proxy_pass http://127.0.0.1:3000;
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
-    proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_read_timeout 3600s;
-}
+```bash
+npm run build && pm2 start ecosystem.config.cjs --env production && pm2 save
 ```
 
-— or let Node terminate it by setting `TLS_ENABLED=true` and the `TLS_*` paths.
+Run `pm2 startup` once and execute the command it prints so PM2 comes back after
+a reboot. Useful afterwards: `pm2 logs csms`, `pm2 restart csms`, `pm2 monit`.
+
+**Run exactly one instance in fork mode** — the config already does. Charge point
+WebSockets, the OCPP call queue and the SSE bus are in-process state, so a second
+worker would see only some of the charge points and REST commands would be routed
+to the wrong process. Use `instances: 1`, never `'max'`.
+
+### TLS
+
+TLS is terminated at nginx: keep `TLS_ENABLED=false`, set
+`OCPP_SECURITY_PROFILE=2`, and let the Node process listen on plain HTTP on
+`127.0.0.1:3000`.
+
+The eplug.mn certificate (RapidSSL / DigiCert, `eplug.mn` + `www.eplug.mn`,
+expires **2027-03-05**) ships as two files from the CA plus the private key you
+generated with the CSR:
+
+| File | What it is |
+|---|---|
+| `eplug.crt` | leaf certificate |
+| `bundle_files.crt` | intermediate (RapidSSL TLS RSA CA G1) + root (DigiCert Global Root G2) |
+| `eplug.mn.key` | **your** private key — never leaves the server, never committed |
+
+Build the chain nginx wants and install everything in one step:
+
+```bash
+cat eplug.crt bundle_files.crt > fullchain.crt
+```
+
+```bash
+sudo ./deploy/install-nginx-ubuntu.sh fullchain.crt eplug.mn.key bundle_files.crt
+```
+
+The script installs nginx, verifies the key matches the certificate, copies the
+files to `/etc/nginx/ssl/eplug.mn/` (key `0600`), enables the site, opens the
+firewall and reloads. Then check it end to end:
+
+```bash
+curl -sS https://eplug.mn/api/health
+```
+
+Node can terminate TLS itself instead — set `TLS_ENABLED=true` with
+`TLS_CERT_PATH=/etc/nginx/ssl/eplug.mn/fullchain.crt` and the matching key.
 For **security profile 3**, Node must terminate TLS so it can read the client
 certificate; set `OCPP_SECURITY_PROFILE=3` and `TLS_CA_PATH` to the CA that
 issued your charge point certificates.
@@ -250,6 +306,8 @@ See `.env.example` for the full list. The ones that matter most:
 
 | Variable | Meaning |
 |---|---|
+| `PUBLIC_BASE_URL` | public origin the API is served at, e.g. `https://eplug.mn` (discovery/logs only) |
+| `API_BASE_PATH` | path all REST routes are mounted under, default `/api` |
 | `MONGODB_URI` | MongoDB connection string |
 | `JWT_SECRET` | **must** be changed; ≥ 16 characters |
 | `OCPP_SECURITY_PROFILE` | 1, 2 or 3 (see above) |

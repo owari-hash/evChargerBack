@@ -7,6 +7,17 @@ const bool = (def: boolean) =>
     .optional()
     .transform((v) => (v === undefined || v === '' ? def : v.toLowerCase() === 'true' || v === '1'));
 
+/** Normalise a mount path: always a leading slash, never a trailing one. */
+const path = (def: string) =>
+  z
+    .string()
+    .optional()
+    .transform((v) => {
+      const raw = (v ?? '').trim() || def;
+      const lead = raw.startsWith('/') ? raw : `/${raw}`;
+      return lead === '/' ? '' : lead.replace(/\/+$/, '');
+    });
+
 const int = (def: number) =>
   z
     .string()
@@ -20,6 +31,14 @@ const schema = z.object({
   HTTP_HOST: z.string().default('0.0.0.0'),
   LOG_LEVEL: z.string().default('info'),
   CORS_ORIGIN: z.string().default('*'),
+  /** Public origin the API is reached at through the reverse proxy. */
+  PUBLIC_BASE_URL: z
+    .string()
+    .url()
+    .default('https://eplug.mn')
+    .transform((v) => v.replace(/\/+$/, '')),
+  /** Path every REST route is mounted under, e.g. https://eplug.mn/api/... */
+  API_BASE_PATH: path('/api'),
 
   MONGODB_URI: z.string().default('mongodb://127.0.0.1:27017/csms'),
 
@@ -29,7 +48,7 @@ const schema = z.object({
   ADMIN_PASSWORD: z.string().default('ChangeMe123!'),
   API_KEY: z.string().optional(),
 
-  OCPP_PATH_PREFIX: z.string().default('/ocpp'),
+  OCPP_PATH_PREFIX: path('/ocpp'),
   OCPP_SECURITY_PROFILE: int(1).pipe(z.number().int().min(1).max(3)),
   OCPP_REQUIRE_KNOWN_CHARGEPOINT: bool(false),
   OCPP_ALLOW_ANONYMOUS: bool(true),
@@ -63,3 +82,13 @@ if (!parsed.success) {
 
 export const env = parsed.data;
 export type Env = typeof env;
+
+/** Absolute public URL of a REST path, e.g. apiUrl('/charge-points'). */
+export function apiUrl(subPath = ''): string {
+  return `${env.PUBLIC_BASE_URL}${env.API_BASE_PATH}${subPath}`;
+}
+
+/** Absolute public WebSocket URL charge points connect to. */
+export function ocppUrl(subPath = ''): string {
+  return `${env.PUBLIC_BASE_URL.replace(/^http/, 'ws')}${env.OCPP_PATH_PREFIX}${subPath}`;
+}

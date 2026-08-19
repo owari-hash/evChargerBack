@@ -4,3 +4,9 @@ dist/
 *.log
 certs/
 prisma/dev.db*
+
+# TLS material — never commit private keys
+*.key
+*.pem
+certs/*.key
+logs/

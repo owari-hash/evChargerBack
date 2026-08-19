@@ -2,6 +2,7 @@
  * Minimal OCPP 1.6J charge point simulator, for smoke-testing the Central System.
  *
  *   npm run simulator -- --id CP-DEMO-001 --url ws://localhost:3000/ocpp --key <AuthorizationKey>
+ *   npm run simulator -- --id CP-DEMO-001 --url wss://eplug.mn/ocpp --key <AuthorizationKey>
  *
  * It boots, sends StatusNotification, starts a transaction, streams MeterValues
  * for a while, then stops. It also answers the Central System's commands.

@@ -1,9 +1,9 @@
-import express, { type Express } from 'express';
+import express, { Router, type Express } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import mongoose from 'mongoose';
 import pinoHttp from 'pino-http';
-import { env } from '../config/env';
+import { apiUrl, env, ocppUrl } from '../config/env';
 import { apiLogger } from '../lib/logger';
 import { connectionManager } from '../ocpp/manager';
 import { SUPPORTED_ACTIONS } from '../ocpp/schemas';
@@ -26,6 +26,7 @@ import { transactionsRouter } from './routes/transactions.routes';
 
 export function createApp(): Express {
   const app = express();
+  const base = env.API_BASE_PATH; // '/api' by default
 
   app.set('trust proxy', 1);
   app.use(helmet());
@@ -39,13 +40,13 @@ export function createApp(): Express {
   app.use(
     pinoHttp({
       logger: apiLogger,
-      autoLogging: { ignore: (req) => req.url?.startsWith('/api/events/stream') === true },
+      autoLogging: { ignore: (req) => req.url?.startsWith(`${base}/events/stream`) === true },
     }),
   );
 
   // ---- Health & discovery (unauthenticated) ----
 
-  app.get('/health', (_req, res) => {
+  const health: express.RequestHandler = (_req, res) => {
     const dbState = mongoose.connection.readyState; // 1 = connected
     res.status(dbState === 1 ? 200 : 503).json({
       status: dbState === 1 ? 'ok' : 'degraded',
@@ -54,49 +55,60 @@ export function createApp(): Express {
       chargePointsOnline: connectionManager.size,
       timestamp: new Date().toISOString(),
     });
-  });
+  };
 
-  app.get('/api', (_req, res) => {
+  // Reachable both at the origin root and behind a proxy that only forwards `${base}`.
+  app.get('/health', health);
+
+  const api = Router();
+
+  api.get('/health', health);
+
+  api.get('/', (_req, res) => {
     res.json({
       name: 'OCPP 1.6J Central System',
       ocppVersion: '1.6',
       transport: 'JSON over WebSocket',
       securityProfile: env.OCPP_SECURITY_PROFILE,
+      baseUrl: apiUrl(),
+      websocketUrl: ocppUrl('/{chargePointId}'),
       websocketPath: `${env.OCPP_PATH_PREFIX}/{chargePointId}`,
       supportedActions: SUPPORTED_ACTIONS,
       endpoints: {
-        auth: '/api/auth',
-        chargePoints: '/api/charge-points',
-        commands: '/api/charge-points/:id/<command>',
-        connectors: '/api/connectors',
-        transactions: '/api/transactions',
-        meterValues: '/api/meter-values',
-        idTags: '/api/id-tags',
-        reservations: '/api/reservations',
-        chargingProfiles: '/api/charging-profiles',
-        jobs: '/api/jobs',
-        security: '/api/security',
-        stats: '/api/stats',
-        eventStream: '/api/events/stream',
+        auth: `${base}/auth`,
+        chargePoints: `${base}/charge-points`,
+        commands: `${base}/charge-points/:id/<command>`,
+        connectors: `${base}/connectors`,
+        transactions: `${base}/transactions`,
+        meterValues: `${base}/meter-values`,
+        idTags: `${base}/id-tags`,
+        reservations: `${base}/reservations`,
+        chargingProfiles: `${base}/charging-profiles`,
+        jobs: `${base}/jobs`,
+        security: `${base}/security`,
+        stats: `${base}/stats`,
+        eventStream: `${base}/events/stream`,
       },
     });
   });
 
   // ---- API ----
 
-  app.use('/api/auth', authRouter);
-  app.use('/api/charge-points', chargePointsRouter);
-  app.use('/api/charge-points', commandsRouter); // POST /api/charge-points/:id/<command>
-  app.use('/api/connectors', connectorsRouter);
-  app.use('/api/transactions', transactionsRouter);
-  app.use('/api/meter-values', meterValuesRouter);
-  app.use('/api/id-tags', idTagsRouter);
-  app.use('/api/reservations', reservationsRouter);
-  app.use('/api/charging-profiles', chargingProfilesRouter);
-  app.use('/api/jobs', jobsRouter);
-  app.use('/api/security', securityRouter);
-  app.use('/api/stats', statsRouter);
-  app.use('/api/events', eventsRouter);
+  api.use('/auth', authRouter);
+  api.use('/charge-points', chargePointsRouter);
+  api.use('/charge-points', commandsRouter); // POST ${base}/charge-points/:id/<command>
+  api.use('/connectors', connectorsRouter);
+  api.use('/transactions', transactionsRouter);
+  api.use('/meter-values', meterValuesRouter);
+  api.use('/id-tags', idTagsRouter);
+  api.use('/reservations', reservationsRouter);
+  api.use('/charging-profiles', chargingProfilesRouter);
+  api.use('/jobs', jobsRouter);
+  api.use('/security', securityRouter);
+  api.use('/stats', statsRouter);
+  api.use('/events', eventsRouter);
+
+  app.use(base || '/', api);
 
   app.use(notFoundHandler);
   app.use(errorHandler);
