@@ -380,6 +380,15 @@ export async function syncPayment(payment: PaymentDoc): Promise<PaymentDoc> {
         paidAt: r.payment_date ? new Date(r.payment_date) : undefined,
       }));
       paidAmount = num(res.paid_amount);
+      if (rows.length === 0 && paidAmount === 0) {
+        // A settled invoice that reports nothing means we are reading the wrong
+        // fields, not that the customer has not paid. Log the shape once per
+        // check so the mapping can be corrected against a real response.
+        qpayLogger.warn(
+          { invoiceId: payment.invoiceId, keys: Object.keys(res as Record<string, unknown>) },
+          'QuickQR checkPayment returned no rows',
+        );
+      }
     } else {
       const res = await merchant.checkPayment(payment.invoiceId);
       rows = (res.rows ?? []).map((r) => ({
