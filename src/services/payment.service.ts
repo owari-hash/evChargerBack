@@ -385,7 +385,7 @@ export async function syncPayment(payment: PaymentDoc): Promise<PaymentDoc> {
         // fields, not that the customer has not paid. Log the shape once per
         // check so the mapping can be corrected against a real response.
         qpayLogger.warn(
-          { invoiceId: payment.invoiceId, keys: Object.keys(res as Record<string, unknown>) },
+          { invoiceId: payment.invoiceId, response: res },
           'QuickQR checkPayment returned no rows',
         );
       }

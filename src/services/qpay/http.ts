@@ -50,6 +50,30 @@ export interface QpayRequest {
   label?: string;
 }
 
+
+/**
+ * QPay reports validation failures as an object keyed by field —
+ * `{"invoice_id":{"type":"REQUIRED","message":"Required!"}}` — not as a string.
+ * Interpolating that straight into an error message produced the useless
+ * "QPay: [object Object]", which hid the actual cause. Flatten it to
+ * `invoice_id: Required!` so both the log and the API response say what is wrong.
+ */
+function describeQpayError(value: unknown): string | undefined {
+  if (typeof value === 'string') return value.trim() || undefined;
+  if (!value || typeof value !== 'object') return undefined;
+
+  const parts: string[] = [];
+  for (const [field, detail] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof detail === 'string') {
+      parts.push(`${field}: ${detail}`);
+    } else if (detail && typeof detail === 'object') {
+      const d = detail as { message?: unknown; type?: unknown };
+      const text = typeof d.message === 'string' ? d.message : String(d.type ?? '');
+      parts.push(text ? `${field}: ${text}` : field);
+    }
+  }
+  return parts.length > 0 ? parts.join('; ') : undefined;
+}
 /**
  * Single place every QPay HTTP call goes through: JSON in/out, a hard timeout,
  * consistent error mapping and logging that never prints tokens.
@@ -94,8 +118,12 @@ export async function qpayFetch<T = unknown>(req: QpayRequest): Promise<T> {
   const ms = Date.now() - started;
 
   if (!res.ok) {
-    const body = parsed as { message?: string; error?: string; name?: string } | undefined;
-    const message = body?.message ?? body?.error ?? body?.name ?? `QPay returned HTTP ${res.status}`;
+    const body = parsed as { message?: unknown; error?: unknown; name?: unknown } | undefined;
+    const message =
+      describeQpayError(body?.message) ??
+      describeQpayError(body?.error) ??
+      describeQpayError(body?.name) ??
+      `QPay returned HTTP ${res.status}`;
     qpayLogger.warn({ label, status: res.status, ms, body: redact(parsed) }, 'qpay error response');
     throw new QpayError(res.status, message, parsed, res.status === 401 || res.status === 403);
   }

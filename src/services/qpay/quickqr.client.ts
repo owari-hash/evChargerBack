@@ -172,19 +172,14 @@ export interface QuickQrPaymentCheck {
 /**
  * List the payments QPay has recorded against one QuickQR invoice.
  *
- * `/v2/payment/check` is the same endpoint the merchant API uses and takes the
- * same body — an object reference, not an `invoice_id` field. Sending the wrong
- * shape is not an error to QPay: it simply matches nothing and answers 200 with
- * an empty `rows`, which reads as "not paid yet" no matter how much the customer
- * actually paid.
+ * QuickQR takes `invoice_id` here, unlike the merchant API's `/v2/payment/check`
+ * which wants an `object_type` / `object_id` pair against the same path. Sending
+ * the merchant shape is rejected with `{"invoice_id":{"type":"REQUIRED"}}`.
  */
-export const checkPayment = (
-  invoiceId: string,
-  offset: { page_number: number; page_limit: number } = { page_number: 1, page_limit: 100 },
-) =>
+export const checkPayment = (invoiceId: string) =>
   authorizedFetch<QuickQrPaymentCheck>('quickqr', {
     method: 'POST',
     path: '/v2/payment/check',
     label: 'POST /v2/payment/check (quickqr)',
-    body: { object_type: 'INVOICE', object_id: invoiceId, offset },
+    body: { invoice_id: invoiceId },
   });
