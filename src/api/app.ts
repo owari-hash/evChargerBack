@@ -21,6 +21,8 @@ import {
   reservationsRouter,
   statsRouter,
 } from './routes/misc.routes';
+import { paymentsRouter } from './routes/payments.routes';
+import { qpayRouter } from './routes/qpay.routes';
 import { securityRouter } from './routes/security.routes';
 import { transactionsRouter } from './routes/transactions.routes';
 
@@ -86,6 +88,9 @@ export function createApp(): Express {
         chargingProfiles: `${base}/charging-profiles`,
         jobs: `${base}/jobs`,
         security: `${base}/security`,
+        payments: `${base}/payments`,
+        qpayCallback: `${base}/payments/callback/:paymentId/:secret`,
+        quickQr: `${base}/qpay`,
         stats: `${base}/stats`,
         eventStream: `${base}/events/stream`,
       },
@@ -104,6 +109,8 @@ export function createApp(): Express {
   api.use('/reservations', reservationsRouter);
   api.use('/charging-profiles', chargingProfilesRouter);
   api.use('/jobs', jobsRouter);
+  api.use('/payments', paymentsRouter);
+  api.use('/qpay', qpayRouter);
   api.use('/security', securityRouter);
   api.use('/stats', statsRouter);
   api.use('/events', eventsRouter);

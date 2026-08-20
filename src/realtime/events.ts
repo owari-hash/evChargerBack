@@ -13,6 +13,9 @@ export type CsmsEventName =
   | 'firmware.status'
   | 'diagnostics.status'
   | 'log.status'
+  | 'payment.created'
+  | 'payment.paid'
+  | 'payment.canceled'
   | 'command.result'
   | 'ocpp.message';
 

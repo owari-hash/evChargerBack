@@ -3,6 +3,8 @@ import { logger } from '../lib/logger';
 import { ChargePoint } from '../models/ChargePoint';
 import { Reservation } from '../models/Reservation';
 import { connectionManager } from '../ocpp/manager';
+import { Payment } from '../models/Payment';
+import { reconcilePendingPayments } from './payment.service';
 
 let timers: NodeJS.Timeout[] = [];
 
@@ -48,6 +50,27 @@ async function expireReservations(): Promise<void> {
   }
 }
 
+/**
+ * Reconcile QPay invoices we never got a callback for, and retire the ones that
+ * are past their expiry so they stop being polled forever.
+ */
+async function reconcileQpayPayments(): Promise<void> {
+  if (!env.QPAY_ENABLED) return;
+
+  const expired = await Payment.updateMany(
+    { status: 'PENDING', paidAmount: { $lte: 0 }, expiresAt: { $lte: new Date() } },
+    { $set: { status: 'EXPIRED' } },
+  );
+  if (expired.modifiedCount > 0) {
+    logger.info({ count: expired.modifiedCount }, 'expired qpay invoices');
+  }
+
+  const result = await reconcilePendingPayments(50);
+  if (result.paid > 0) {
+    logger.info(result, 'qpay reconciliation settled payments');
+  }
+}
+
 export function startMaintenanceJobs(): void {
   const run = (fn: () => Promise<void>, everyMs: number) => {
     const t = setInterval(() => {
@@ -59,6 +82,7 @@ export function startMaintenanceJobs(): void {
 
   run(sweepOfflineChargePoints, 60_000);
   run(expireReservations, 60_000);
+  if (env.QPAY_ENABLED) run(reconcileQpayPayments, 120_000);
 }
 
 export function stopMaintenanceJobs(): void {

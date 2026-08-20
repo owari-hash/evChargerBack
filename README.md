@@ -176,6 +176,30 @@ GET    /api/security/csrs                   ?status=Pending
 POST   /api/security/csrs/:id/sign          (OPERATOR)
 POST   /api/security/csrs/:id/reject        (OPERATOR)
 
+GET    /api/payments/config                 QPay switches + cached token expiry (no secrets)
+GET    /api/payments                        ?status=&chargePointId=&idTag=&transactionId=&from=&to=
+POST   /api/payments                        (OPERATOR) create an invoice -> QR payload
+POST   /api/payments/transactions/:id       (OPERATOR) invoice one charging session
+GET    /api/payments/:id
+GET    /api/payments/:id/qr                 qrText + base64 qrImage + wallet deeplinks
+POST   /api/payments/:id/check              re-check with QPay (client polling)
+POST   /api/payments/:id/cancel             (OPERATOR)
+POST   /api/payments/:id/refund             (ADMIN)
+POST   /api/payments/reconcile              (ADMIN) sweep invoices with no callback
+ALL    /api/payments/callback/:id/:secret   QPay callback (unauthenticated, secret in path)
+
+GET    /api/qpay/cities                     QuickQR: aimag/hot list
+GET    /api/qpay/cities/:code/districts     QuickQR: sum/duureg list
+GET    /api/qpay/merchants                  ?page=&limit=
+POST   /api/qpay/merchants/company          (OPERATOR) onboard a company sub-merchant
+POST   /api/qpay/merchants/person           (OPERATOR) onboard an individual sub-merchant
+PUT    /api/qpay/merchants/company/:id      (OPERATOR)
+PUT    /api/qpay/merchants/person/:id       (OPERATOR)
+GET    /api/qpay/merchants/:id
+DELETE /api/qpay/merchants/:id              (ADMIN)
+GET    /api/qpay/tokens                     (ADMIN) token state, never the tokens
+POST   /api/qpay/tokens/:scope/invalidate   (ADMIN) force a re-authentication
+
 GET    /api/stats/overview
 GET    /api/stats/energy-series             ?days=30&chargePointId=
 GET    /api/stats/top-charge-points         ?days=30
@@ -200,8 +224,108 @@ es.addEventListener('transaction.metervalue', (e) => console.log(JSON.parse(e.da
 Events: `chargepoint.connected`, `chargepoint.disconnected`, `chargepoint.boot`,
 `chargepoint.heartbeat`, `connector.status`, `transaction.started`,
 `transaction.stopped`, `transaction.metervalue`, `security.event`,
-`firmware.status`, `diagnostics.status`, `log.status`, `command.result`,
-`ocpp.message`. Filter with `?events=a,b,c`.
+`firmware.status`, `diagnostics.status`, `log.status`, `payment.created`,
+`payment.paid`, `payment.canceled`, `command.result`, `ocpp.message`. Filter with
+`?events=a,b,c`.
+
+---
+
+## QPay payments
+
+Two QPay APIs are wired up behind one token manager:
+
+| | Host | Auth | Used for |
+|---|---|---|---|
+| **QuickQR** | `quickqr.qpay.mn` | HTTP Basic **+** `terminal_id` | sub-merchant onboarding, invoices, payment check |
+| **Merchant** | `merchant.qpay.mn` / `merchant-sandbox.qpay.mn` | HTTP Basic | invoices, payment check, refunds |
+
+`QPAY_DEFAULT_PROVIDER` picks which one new invoices go through. The credentials
+in `.env` (`ZEV_TABS1`) authenticate against **QuickQR** — the merchant hosts
+reject them with `NO_CREDENTIALS`, so ask QPay for merchant-API credentials
+before switching `QPAY_DEFAULT_PROVIDER=merchant`.
+
+### Token handling
+
+`src/services/qpay/tokens.ts` is the only place tokens are touched:
+
+- **One login per scope.** Concurrent callers share a single in-flight
+  authentication, so a burst of payments does not trigger a burst of logins.
+- **Refresh before expiry.** `POST /v2/auth/refresh` with
+  `Authorization: Bearer <refresh_token>`, `QPAY_TOKEN_SKEW_SECONDS` (60s) early.
+  QPay reports `expires_in` as an absolute UNIX timestamp, which is handled
+  alongside the plain-duration form.
+- **Encrypted at rest.** Tokens live in the `qpaytokens` collection as
+  AES-256-GCM ciphertext keyed by `QPAY_TOKEN_SECRET` (or `JWT_SECRET`), with
+  `select: false` and stripped from every JSON projection. Rotating the secret or
+  the credentials invalidates the cache — a stored `credentialFingerprint`
+  detects it — instead of failing every call.
+- **Self-healing.** A `401`/`403` from QPay drops the cached token and retries the
+  call exactly once.
+- **Never logged.** `redact()` masks `access_token`, `refresh_token`, `password`
+  and api-key fields in every log line; only a 4-character tail is ever printed.
+
+`GET /api/payments/config` and `GET /api/qpay/tokens` expose expiry timestamps,
+never the tokens themselves.
+
+### Charging session → payment
+
+```bash
+# 1. Invoice a finished session (amount derived from cost or tariffPerKwh × kWh)
+curl -X POST https://eplug.mn/api/payments/transactions/1042 \
+  -H "Authorization: Bearer $JWT" -H 'Content-Type: application/json' \
+  -d '{"receiverCode":"99112210"}'
+# -> { id, status: "PENDING", qrText, shortUrl, deeplinks: [...] }
+
+# 2. Render the QR (base64 PNG is kept out of the default payload)
+curl https://eplug.mn/api/payments/<id>/qr -H "Authorization: Bearer $JWT"
+
+# 3. Poll while the customer pays — or listen for payment.paid on the SSE stream
+curl -X POST https://eplug.mn/api/payments/<id>/check -H "Authorization: Bearer $JWT"
+```
+
+An invoice for an arbitrary amount is `POST /api/payments` with
+`{ "amount": 5000, "description": "..." }`. `senderInvoiceNo` is the idempotency
+key: it is unique, and re-posting one returns the existing invoice rather than
+billing the customer twice.
+
+### Callbacks
+
+QPay calls
+`{PUBLIC_BASE_URL}/api/payments/callback/{QPAY_CALLBACK_TOKEN}/{paymentId}/{secret}`
+— both secrets sit in the path, never the query string, because QPay appends its
+own query parameters. The route is unauthenticated (QPay cannot present a JWT)
+and rate limited to 120 requests/minute.
+
+**A callback never carries payment state into the database.** It only tells us
+which invoice to re-check; the status always comes from QPay's own
+`/v2/payment/check` response. A replayed or forged callback therefore changes
+nothing. The per-invoice secret is compared in constant time.
+
+Because callbacks do get lost, a maintenance job re-checks pending invoices
+every two minutes and expires the ones past `QPAY_INVOICE_TTL_MINUTES`;
+`POST /api/payments/reconcile` runs the same sweep on demand.
+
+### QuickQR sub-merchants
+
+QuickQR invoices are issued *for* a sub-merchant, so onboard one first and put
+its id in `QPAY_QUICKQR_MERCHANT_ID` (or pass `quickQrMerchantId` per invoice):
+
+```bash
+curl https://eplug.mn/api/qpay/cities -H "Authorization: Bearer $JWT"
+curl https://eplug.mn/api/qpay/cities/11000/districts -H "Authorization: Bearer $JWT"
+curl -X POST https://eplug.mn/api/qpay/merchants/company \
+  -H "Authorization: Bearer $JWT" -H 'Content-Type: application/json' \
+  -d '{"register_number":"6691374","company_name":"ZEV TABS LLC","name":"ZEV Tabs",
+       "mcc_code":"5552","city":"11000","district":"13000","address":"...",
+       "phone":"99112210","email":"admin@zevtabs.mn"}'
+```
+
+### Payment statuses
+
+`PENDING` → `PAID` (or `PARTIALLY_PAID` when QPay reports less than the invoice
+amount), `CANCELED`, `EXPIRED`, `REFUNDED`, `FAILED` (the invoice could not be
+created). Settling a payment writes the paid amount onto the linked
+transaction's `cost` and emits `payment.paid` on the SSE stream.
 
 ---
 
@@ -315,6 +439,13 @@ See `.env.example` for the full list. The ones that matter most:
 | `OCPP_REQUIRE_KNOWN_CHARGEPOINT` | reject any charge point not already in the database |
 | `OCPP_CALL_TIMEOUT_MS` | how long a REST command waits for the charge point (returns HTTP 504 on timeout) |
 | `OCPP_LOG_MESSAGES` | persist every OCPP frame; `OCPP_LOG_RETENTION_DAYS` sets the TTL |
+| `QPAY_ENABLED` | master switch for `/api/payments` |
+| `QPAY_USERNAME` / `QPAY_PASSWORD` | QPay HTTP Basic credentials, used by both APIs |
+| `QPAY_DEFAULT_PROVIDER` | `quickqr` (quickqr.qpay.mn) or `merchant` (merchant.qpay.mn) |
+| `QPAY_QUICKQR_TERMINAL_ID` | terminal id QPay issued; **required** for QuickQR |
+| `QPAY_QUICKQR_MERCHANT_ID` | default sub-merchant invoices are issued for |
+| `QPAY_CALLBACK_TOKEN` | random secret prefixed to the callback path |
+| `QPAY_TOKEN_SECRET` | encrypts stored QPay tokens at rest; falls back to `JWT_SECRET` |
 
 ---
 
@@ -334,6 +465,8 @@ src/
     server.ts              upgrade handling and security-profile authentication
     handlers/              inbound message handlers
   services/                authorization, transactions, meter values, security, CA
+    qpay/                  QPay transport: crypto, http, token manager, API clients
+    payment.service.ts     invoice lifecycle, callback verification, reconciliation
   api/                     Express app, middleware, routers
   realtime/events.ts       internal event bus feeding the SSE stream
 scripts/

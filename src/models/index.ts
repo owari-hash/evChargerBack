@@ -11,4 +11,6 @@ export * from './ConfigurationKey';
 export * from './Security';
 export * from './Job';
 export * from './Log';
+export * from './Payment';
+export * from './QpayToken';
 export { Counter, nextSequence, ensureSequenceAtLeast } from '../lib/counters';
