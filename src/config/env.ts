@@ -40,6 +40,22 @@ const optRaw = z
   .optional()
   .transform((v) => (v ? v : undefined));
 
+/** Comma-separated list of positive integers, e.g. "1000,3000,5000". */
+const intList = (def: number[]) =>
+  z
+    .string()
+    .optional()
+    .transform((v) => {
+      const raw = (v ?? '').trim();
+      if (!raw) return def;
+      const parsed = raw
+        .split(',')
+        .map((part) => Number(part.trim()))
+        .filter((n) => Number.isInteger(n) && n > 0);
+      return parsed.length > 0 ? parsed : def;
+    })
+    .pipe(z.array(z.number().int().positive()));
+
 const int = (def: number) =>
   z
     .string()
@@ -128,6 +144,28 @@ const schema = z.object({
   QPAY_TOKEN_SECRET: optRaw,
   /** How long a freshly created invoice stays payable, in minutes. */
   QPAY_INVOICE_TTL_MINUTES: int(30),
+
+  // ---------- Prepaid wallets ----------
+  /** Master switch for /api/wallets, session debiting and Authorize pre-checks. */
+  WALLET_ENABLED: bool(true),
+  /** Amounts the top-up screens offer as one-tap buttons, in MNT. */
+  WALLET_TOPUP_PRESETS: intList([1000, 3000, 5000, 10000, 20000, 50000, 100000]),
+  /** Bounds on a freely typed top-up amount, in MNT. */
+  WALLET_TOPUP_MIN: int(100),
+  WALLET_TOPUP_MAX: int(5_000_000),
+  /** Balance a wallet must hold before its idTag may start a session, in MNT. */
+  WALLET_MIN_START_BALANCE: int(1000),
+  /**
+   * Let a session that outran the balance push the wallet negative. The
+   * alternative — debiting only what is left — silently writes off the shortfall,
+   * so this defaults on and the debt is settled by the next top-up.
+   */
+  WALLET_ALLOW_NEGATIVE: bool(true),
+  /**
+   * Refuse Authorize for a tag whose wallet is below WALLET_MIN_START_BALANCE.
+   * Off by default: turning it on stops every card that has no wallet yet.
+   */
+  WALLET_REQUIRE_BALANCE_TO_START: bool(false),
 
   TLS_ENABLED: bool(false),
   TLS_KEY_PATH: z.string().default('./certs/server.key'),

@@ -9,6 +9,7 @@ import type { IdTagInfo, MeterValueEntry } from '../ocpp/schemas/common';
 import { bus } from '../realtime/events';
 import { authorizeIdTag, canStopTransaction } from './authorization.service';
 import { storeMeterValues } from './meter.service';
+import { chargeSessionToWallet } from './wallet.service';
 
 export interface StartTransactionInput {
   chargePointId: string;
@@ -136,6 +137,20 @@ export async function stopTransaction(
       reason: input.reason,
       timestamp: input.timestamp,
     });
+
+    // Bill the prepaid wallet behind the tag. Never throws — the charge point is
+    // waiting on this StopTransaction, and a billing problem is ours to fix, not
+    // a reason to leave the connector stuck.
+    if (tx.cost && tx.cost > 0) {
+      await chargeSessionToWallet({
+        transactionId: tx._id,
+        idTag: tx.idTag,
+        amount: tx.cost,
+        chargePointId: tx.chargePointId,
+        connectorId: tx.connectorId,
+        energyWh: tx.energyWh ?? 0,
+      });
+    }
   }
 
   if (!input.idTag) return {};
@@ -161,12 +176,28 @@ export async function closeOrphanedTransactions(
     tx.stopReason = reason;
     tx.meterStop = tx.lastMeterWh ?? tx.meterStart;
     tx.energyWh = Math.max(0, (tx.meterStop ?? tx.meterStart) - tx.meterStart);
+    if (tx.tariffPerKwh) {
+      tx.cost = Number(((tx.energyWh / 1000) * tx.tariffPerKwh).toFixed(4));
+    }
     await tx.save();
     bus.emitEvent('transaction.stopped', chargePointId, {
       transactionId: tx._id,
       reason,
       orphaned: true,
     });
+
+    // Energy the car actually took still has to be paid for, even though the
+    // charge point never sent a StopTransaction for it.
+    if (tx.cost && tx.cost > 0) {
+      await chargeSessionToWallet({
+        transactionId: tx._id,
+        idTag: tx.idTag,
+        amount: tx.cost,
+        chargePointId: tx.chargePointId,
+        connectorId: tx.connectorId,
+        energyWh: tx.energyWh ?? 0,
+      });
+    }
   }
   if (open.length > 0) {
     await Connector.updateMany(

@@ -1,7 +1,15 @@
 import { Schema, model, type InferSchemaType, type HydratedDocument } from 'mongoose';
+import { WALLET_OWNER_TYPES } from './Wallet';
 
 export const PAYMENT_PROVIDERS = ['QPAY', 'QPAY_QUICKQR'] as const;
 export type PaymentProvider = (typeof PAYMENT_PROVIDERS)[number];
+
+/**
+ * What the invoice is for. `CHARGING` bills a session directly; `WALLET_TOPUP`
+ * credits a prepaid wallet once QPay settles it.
+ */
+export const PAYMENT_PURPOSES = ['CHARGING', 'WALLET_TOPUP'] as const;
+export type PaymentPurpose = (typeof PAYMENT_PURPOSES)[number];
 
 export const PAYMENT_STATUSES = [
   'PENDING',
@@ -34,6 +42,7 @@ const paymentSchema = new Schema(
     /** Our own reference, sent to QPay as sender_invoice_no. Unique = idempotency key. */
     senderInvoiceNo: { type: String, required: true, unique: true },
     provider: { type: String, enum: PAYMENT_PROVIDERS, default: 'QPAY', index: true },
+    purpose: { type: String, enum: PAYMENT_PURPOSES, default: 'CHARGING', index: true },
     status: { type: String, enum: PAYMENT_STATUSES, default: 'PENDING', index: true },
 
     /** QPay side identifiers. */
@@ -53,6 +62,12 @@ const paymentSchema = new Schema(
     idTag: { type: String, index: true },
     userId: { type: String },
     invoiceReceiverCode: { type: String },
+
+    /** Wallet a WALLET_TOPUP invoice credits, and when the credit was applied. */
+    walletOwnerType: { type: String, enum: WALLET_OWNER_TYPES },
+    walletOwnerId: { type: String, index: true, sparse: true },
+    walletCreditedAt: { type: Date },
+    walletEntryId: { type: String },
 
     /** Payment artefacts handed to the client so it can render the QR. */
     qrText: { type: String },

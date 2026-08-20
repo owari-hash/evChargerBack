@@ -25,6 +25,7 @@ import { paymentsRouter } from './routes/payments.routes';
 import { qpayRouter } from './routes/qpay.routes';
 import { securityRouter } from './routes/security.routes';
 import { transactionsRouter } from './routes/transactions.routes';
+import { walletsRouter } from './routes/wallets.routes';
 
 export function createApp(): Express {
   const app = express();
@@ -89,6 +90,8 @@ export function createApp(): Express {
         jobs: `${base}/jobs`,
         security: `${base}/security`,
         payments: `${base}/payments`,
+        wallets: `${base}/wallets`,
+        walletTopUp: `${base}/wallets/:ownerType/:ownerId/topup`,
         qpayCallback: `${base}/payments/callback/:paymentId/:secret`,
         quickQr: `${base}/qpay`,
         stats: `${base}/stats`,
@@ -110,6 +113,7 @@ export function createApp(): Express {
   api.use('/charging-profiles', chargingProfilesRouter);
   api.use('/jobs', jobsRouter);
   api.use('/payments', paymentsRouter);
+  api.use('/wallets', walletsRouter);
   api.use('/qpay', qpayRouter);
   api.use('/security', securityRouter);
   api.use('/stats', statsRouter);

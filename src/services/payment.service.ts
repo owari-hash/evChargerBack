@@ -13,12 +13,19 @@ import {
   serviceUnavailable,
   unauthorized,
 } from '../lib/errors';
-import { Payment, type PaymentDoc, type PaymentStatus } from '../models/Payment';
+import {
+  Payment,
+  type PaymentDoc,
+  type PaymentPurpose,
+  type PaymentStatus,
+} from '../models/Payment';
+import type { WalletOwnerType } from '../models/Wallet';
 import { Transaction } from '../models/Transaction';
 import { bus } from '../realtime/events';
 import { QpayError, qpayLogger } from './qpay/http';
 import * as merchant from './qpay/merchant.client';
 import * as quickqr from './qpay/quickqr.client';
+import { credit as creditWallet, debit as debitWallet } from './wallet.service';
 
 /** MNT has no subunits in practice — QPay expects whole tugrik. */
 const normaliseAmount = (amount: number): number => {
@@ -94,6 +101,11 @@ export interface CreatePaymentInput {
   connectorId?: number;
   idTag?: string;
   userId?: string;
+  /** What the invoice is for; WALLET_TOPUP credits a wallet once it settles. */
+  purpose?: PaymentPurpose;
+  /** Wallet a WALLET_TOPUP invoice credits. Required when purpose is WALLET_TOPUP. */
+  walletOwnerType?: WalletOwnerType;
+  walletOwnerId?: string;
   /** Optional QuickQR sub-merchant to bill through instead of the main merchant. */
   quickQrMerchantId?: string;
   bankAccounts?: quickqr.QuickQrBankAccount[];
@@ -123,6 +135,11 @@ export function toPaymentView(p: PaymentDoc | Record<string, unknown>): Record<s
  */
 export async function createPayment(input: CreatePaymentInput): Promise<PaymentDoc> {
   assertEnabled();
+
+  const purpose: PaymentPurpose = input.purpose ?? 'CHARGING';
+  if (purpose === 'WALLET_TOPUP' && !input.walletOwnerId?.trim()) {
+    throw badRequest('walletOwnerId is required for a WALLET_TOPUP invoice');
+  }
 
   let amount = input.amount;
   let description = input.description;
@@ -182,6 +199,9 @@ export async function createPayment(input: CreatePaymentInput): Promise<PaymentD
       connectorId: meta.connectorId,
       idTag: meta.idTag,
       userId: input.userId,
+      purpose,
+      walletOwnerType: purpose === 'WALLET_TOPUP' ? input.walletOwnerType : undefined,
+      walletOwnerId: purpose === 'WALLET_TOPUP' ? input.walletOwnerId : undefined,
       merchantId: quickQrMerchantId,
       invoiceReceiverCode: input.receiverCode ?? input.idTag ?? 'terminal',
       callbackSecret,
@@ -251,6 +271,55 @@ export async function createPayment(input: CreatePaymentInput): Promise<PaymentD
   });
 
   return payment;
+}
+
+/**
+ * Credit a settled top-up to its wallet. Keyed on `payment:<id>` so a QPay
+ * callback and a reconciliation sweep arriving for the same invoice credit it
+ * once. A wallet failure must never roll back a payment QPay has already taken,
+ * so this records the error and leaves the money for an operator to apply.
+ */
+async function applyWalletTopUp(payment: PaymentDoc): Promise<void> {
+  if (payment.purpose !== 'WALLET_TOPUP') return;
+  if (payment.walletCreditedAt) return;
+  if (!payment.walletOwnerId) {
+    qpayLogger.error(
+      { paymentId: String(payment._id) },
+      'settled top-up has no wallet owner; cannot credit',
+    );
+    return;
+  }
+
+  try {
+    const movement = await creditWallet(
+      {
+        ownerType: (payment.walletOwnerType ?? 'USER') as WalletOwnerType,
+        ownerId: payment.walletOwnerId,
+      },
+      payment.paidAmount || payment.amount,
+      'TOPUP',
+      {
+        description: payment.description ?? 'Хэтэвч цэнэглэлт',
+        idempotencyKey: `payment:${String(payment._id)}`,
+        paymentId: String(payment._id),
+        idTag: payment.idTag ?? undefined,
+        createdBy: 'qpay',
+      },
+    );
+
+    payment.walletCreditedAt = new Date();
+    payment.walletEntryId = movement.entryId ?? undefined;
+    await payment.save();
+  } catch (err) {
+    payment.lastError = `wallet credit failed: ${
+      err instanceof Error ? err.message.slice(0, 400) : 'unknown error'
+    }`;
+    await payment.save().catch(() => undefined);
+    qpayLogger.error(
+      { paymentId: String(payment._id), err: (err as Error).message },
+      'failed to credit wallet for settled top-up',
+    );
+  }
 }
 
 /**
@@ -348,6 +417,8 @@ export async function syncPayment(payment: PaymentDoc): Promise<PaymentDoc> {
         { $set: { cost: payment.paidAmount } },
       ).catch(() => undefined);
     }
+
+    await applyWalletTopUp(payment);
     bus.emitEvent('payment.paid', payment.chargePointId ?? undefined, {
       paymentId: String(payment._id),
       senderInvoiceNo: payment.senderInvoiceNo,
@@ -444,6 +515,32 @@ export async function refundPayment(payment: PaymentDoc, note?: string): Promise
 
   payment.status = 'REFUNDED';
   await payment.save();
+
+  // A refunded top-up must take the credited money back out of the wallet, or
+  // the driver keeps a balance QPay has already returned to them.
+  if (payment.purpose === 'WALLET_TOPUP' && payment.walletCreditedAt && payment.walletOwnerId) {
+    await debitWallet(
+      {
+        ownerType: (payment.walletOwnerType ?? 'USER') as WalletOwnerType,
+        ownerId: payment.walletOwnerId,
+      },
+      payment.paidAmount || payment.amount,
+      'ADJUSTMENT',
+      {
+        description: 'Цэнэглэлт буцаагдсан',
+        idempotencyKey: `payment-refund:${String(payment._id)}`,
+        paymentId: String(payment._id),
+        createdBy: 'qpay',
+      },
+      { allowNegative: true },
+    ).catch((err: unknown) =>
+      qpayLogger.error(
+        { paymentId: String(payment._id), err: (err as Error).message },
+        'failed to reverse wallet credit for refunded top-up',
+      ),
+    );
+  }
+
   return payment;
 }
 

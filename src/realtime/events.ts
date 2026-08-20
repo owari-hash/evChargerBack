@@ -16,6 +16,8 @@ export type CsmsEventName =
   | 'payment.created'
   | 'payment.paid'
   | 'payment.canceled'
+  | 'wallet.credited'
+  | 'wallet.debited'
   | 'command.result'
   | 'ocpp.message';
 

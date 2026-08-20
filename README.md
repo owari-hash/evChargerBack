@@ -115,6 +115,32 @@ config is in [`deploy/nginx-eplug.mn.conf`](deploy/nginx-eplug.mn.conf); install
 it with [`deploy/install-nginx-ubuntu.sh`](deploy/install-nginx-ubuntu.sh) (see
 **TLS** below).
 
+### Sharing the origin with the two front ends
+
+`eplug.mn` serves three processes behind the one certificate:
+
+| Path | Process | Port |
+|---|---|---|
+| `/` | driver web app (`../evChargerKiosk`) | 3100 |
+| `/app-api/*` | …its own JSON API, same process | 3100 |
+| `/admin`, `/admin/*` | admin console (`../evChargerAdmin`) | 3001 |
+| `/admin/console-api/*` | …its own JSON API, same process | 3001 |
+| `/api/*`, `/ocpp/*`, `/health` | this backend | 3000 |
+
+Two rules keep them from colliding, and both are load-bearing:
+
+1. **`/api/*` belongs to the CSMS alone.** Next.js route handlers default to
+   `/api/*`, which on a shared origin would be shadowed by this backend. That is
+   why the driver app serves its routes at `/app-api/*` and the console at
+   `/console-api/*`. Moving either back to `/api` breaks it silently — nginx
+   routes the request here and the front end sees a 404 it never sent.
+2. **The console is built with `basePath: /admin`.** A second Next.js app cannot
+   simply be mounted on a sub-path by nginx: both apps emit absolute
+   `/_next/static/...` URLs and would fight over them. `basePath` makes the
+   console emit `/admin/_next/...` instead. It is baked in at build time from
+   `NEXT_PUBLIC_BASE_PATH`, so changing the mount point means rebuilding the
+   console, not just editing nginx.
+
 `PUBLIC_BASE_URL` (default `https://eplug.mn`) is the origin the API reports in
 `GET /api` and in the startup log; it does not change routing. Health is served
 at both `/health` and `/api/health` so it stays reachable through the proxy.
@@ -187,6 +213,19 @@ POST   /api/payments/:id/cancel             (OPERATOR)
 POST   /api/payments/:id/refund             (ADMIN)
 POST   /api/payments/reconcile              (ADMIN) sweep invoices with no callback
 ALL    /api/payments/callback/:id/:secret   QPay callback (unauthenticated, secret in path)
+
+GET    /api/wallets/config                  presets, limits and switches for the top-up screens
+GET    /api/wallets                         (OPERATOR) ?ownerType=&status=&negative=&q=
+GET    /api/wallets/by-id-tag/:idTag        which wallet a card spends from
+GET    /api/wallets/:ownerType/:ownerId     balance + totals + bound cards (created on first read)
+GET    /api/wallets/:ownerType/:ownerId/balance    cheap poll for a balance badge
+GET    /api/wallets/:ownerType/:ownerId/entries    ?type=&from=&to= ledger, newest first
+POST   /api/wallets/:ownerType/:ownerId/topup      (OPERATOR) QPay invoice -> QR payload
+POST   /api/wallets/:ownerType/:ownerId/id-tags    (OPERATOR) bind a card to this wallet
+DELETE /api/wallets/:ownerType/:ownerId/id-tags/:idTag  (OPERATOR)
+POST   /api/wallets/:ownerType/:ownerId/adjust     (ADMIN) signed manual correction
+POST   /api/wallets/:ownerType/:ownerId/freeze     (ADMIN)
+POST   /api/wallets/:ownerType/:ownerId/unfreeze   (ADMIN)
 
 GET    /api/qpay/cities                     QuickQR: aimag/hot list
 GET    /api/qpay/cities/:code/districts     QuickQR: sum/duureg list
@@ -304,6 +343,77 @@ nothing. The per-invoice secret is compared in constant time.
 Because callbacks do get lost, a maintenance job re-checks pending invoices
 every two minutes and expires the ones past `QPAY_INVOICE_TTL_MINUTES`;
 `POST /api/payments/reconcile` runs the same sweep on demand.
+
+---
+
+## Prepaid wallets
+
+A wallet holds a MNT balance that pays for charging automatically. Wallets are
+addressed by a generic owner, so one implementation serves both front ends:
+
+| Owner | Path | Who it is |
+|---|---|---|
+| `USER` | `/api/wallets/USER/<accountId>` | a driver account in the web app |
+| `IDTAG` | `/api/wallets/IDTAG/<idTag>` | a bare RFID card, no account needed |
+
+An idTag spends from its own `IDTAG` wallet unless it has been bound to another
+one (`POST /api/wallets/USER/<id>/id-tags`), which is how every card a driver
+owns ends up drawing on a single account balance. The driver app binds a tag
+automatically when the driver links it.
+
+### How money moves
+
+```
+top-up      POST /api/wallets/USER/42/topup  ──►  QPay invoice (purpose=WALLET_TOPUP)
+                                                        │
+                                   callback / check ────┘
+                                                        ▼
+                                        credit  +20,000₮   ledger: TOPUP
+session end  StopTransaction ──► cost 4,300₮ ──► debit −4,300₮   ledger: CHARGE
+```
+
+Balances are only ever changed by `credit()` / `debit()` in
+`services/wallet.service.ts`. Each writes an append-only `WalletEntry`, so the
+balance is always reproducible by summing the ledger.
+
+**Nothing credits a wallet without QPay confirming it.** A top-up invoice moves
+no money at creation; the balance changes when `syncPayment` sees `PAID`, which
+is the same path a callback and the reconciliation sweep both funnel through.
+
+**Every movement is idempotent.** A ledger entry carries a unique
+`idempotencyKey` — `payment:<paymentId>` for a top-up, `transaction:<id>` for a
+session — so a replayed callback, a double-clicked poll and the two-minute sweep
+all credit exactly once. A lost race is detected by the duplicate key and the
+balance change is rolled back.
+
+A refunded top-up is debited back out, so a driver cannot keep a balance QPay
+has already returned to them.
+
+### Debiting a session
+
+`StopTransaction` debits `transaction.cost` from the wallet behind the tag. It
+never throws: the charge point is waiting on that response, and a billing
+problem must not leave a connector stuck. Failures are logged instead.
+
+With `WALLET_ALLOW_NEGATIVE=true` (the default) a session that outran the
+balance leaves the wallet negative — a debt the next top-up clears. Turning it
+off would silently write off the shortfall instead. Sessions orphaned by a
+charge point reboot are costed and debited the same way.
+
+### Refusing to start on an empty wallet
+
+With `WALLET_REQUIRE_BALANCE_TO_START=true`, `Authorize` returns `Blocked` for a
+tag whose wallet is under `WALLET_MIN_START_BALANCE`. OCPP 1.6 has no "no
+credit" status, and `Blocked` is the one chargers render as *contact your
+operator* rather than *bad card*.
+
+Two deliberate exceptions: the check is skipped when a tag is presented to
+**stop** a session (a driver who ran out mid-charge must still be able to unplug),
+and a wallet lookup that errors is logged and allowed through rather than
+locking every driver out of the network.
+
+**Roll wallets out before enabling this** — it stops every card that has no
+wallet yet, which is why it defaults to `false`.
 
 ### QuickQR sub-merchants
 
@@ -446,6 +556,12 @@ See `.env.example` for the full list. The ones that matter most:
 | `QPAY_QUICKQR_MERCHANT_ID` | default sub-merchant invoices are issued for |
 | `QPAY_CALLBACK_TOKEN` | random secret prefixed to the callback path |
 | `QPAY_TOKEN_SECRET` | encrypts stored QPay tokens at rest; falls back to `JWT_SECRET` |
+| `WALLET_ENABLED` | master switch for `/api/wallets`, session debiting and the Authorize pre-check |
+| `WALLET_TOPUP_PRESETS` | one-tap amounts the driver app offers, e.g. `1000,3000,5000,10000,20000,50000,100000` |
+| `WALLET_TOPUP_MIN` / `WALLET_TOPUP_MAX` | bounds on a freely typed top-up, in MNT |
+| `WALLET_MIN_START_BALANCE` | balance required before a tag may start a session |
+| `WALLET_ALLOW_NEGATIVE` | let an overrun session leave a debt instead of being written off |
+| `WALLET_REQUIRE_BALANCE_TO_START` | refuse `Authorize` below the minimum balance; **off by default** |
 
 ---
 
@@ -467,6 +583,7 @@ src/
   services/                authorization, transactions, meter values, security, CA
     qpay/                  QPay transport: crypto, http, token manager, API clients
     payment.service.ts     invoice lifecycle, callback verification, reconciliation
+    wallet.service.ts      prepaid balances, idempotent ledger, session debiting
   api/                     Express app, middleware, routers
   realtime/events.ts       internal event bus feeding the SSE stream
 scripts/

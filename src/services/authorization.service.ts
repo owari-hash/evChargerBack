@@ -1,13 +1,18 @@
+import { env } from '../config/env';
+import { logger } from '../lib/logger';
 import { IdTag } from '../models/IdTag';
 import { Transaction } from '../models/Transaction';
 import type { AuthorizationStatus } from '../models/enums';
 import type { IdTagInfo } from '../ocpp/schemas/common';
+import { hasBalanceToStart } from './wallet.service';
 
 export interface AuthorizeOptions {
   /** Ignore the concurrent-transaction limit (used when stopping a transaction). */
   skipConcurrencyCheck?: boolean;
   /** Charge point the tag is being presented at, for the allow-list check. */
   chargePointId?: string;
+  /** Skip the prepaid balance pre-check (remote stop, operator override). */
+  skipBalanceCheck?: boolean;
 }
 
 /**
@@ -15,7 +20,10 @@ export interface AuthorizeOptions {
  *
  * Unknown tags are Invalid. A tag whose expiryDate has passed is Expired.
  * A tag that already has `maxActiveTransactions` running transactions is
- * ConcurrentTx.
+ * ConcurrentTx. With WALLET_REQUIRE_BALANCE_TO_START on, a tag whose prepaid
+ * wallet is below WALLET_MIN_START_BALANCE is Blocked — OCPP 1.6 has no
+ * "no credit" status, and Blocked is the one a charge point renders as
+ * "contact your operator" rather than "bad card".
  */
 export async function authorizeIdTag(
   idTag: string,
@@ -54,6 +62,29 @@ export async function authorizeIdTag(
     const active = await Transaction.countDocuments({ idTag, status: 'Active' });
     if (active >= limit) {
       return { ...base, status: 'ConcurrentTx' };
+    }
+  }
+
+  // Prepaid balance check. Skipped when stopping a transaction — a driver who
+  // ran out mid-session must still be able to end it and unplug.
+  if (
+    env.WALLET_ENABLED &&
+    env.WALLET_REQUIRE_BALANCE_TO_START &&
+    !opts.skipConcurrencyCheck &&
+    !opts.skipBalanceCheck
+  ) {
+    try {
+      const funds = await hasBalanceToStart(idTag);
+      if (!funds.ok) {
+        logger.info(
+          { idTag, balance: funds.balance, required: funds.required },
+          'authorization refused: insufficient wallet balance',
+        );
+        return { ...base, status: 'Blocked' };
+      }
+    } catch (err) {
+      // A wallet lookup failure must not lock every driver out of the network.
+      logger.error({ idTag, err: (err as Error).message }, 'wallet balance check failed');
     }
   }
 

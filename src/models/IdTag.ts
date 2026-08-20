@@ -1,5 +1,6 @@
 import { Schema, model, type InferSchemaType, type HydratedDocument } from 'mongoose';
 import { AUTHORIZATION_STATUSES } from './enums';
+import { WALLET_OWNER_TYPES } from './Wallet';
 
 const idTagSchema = new Schema(
   {
@@ -15,6 +16,14 @@ const idTagSchema = new Schema(
     // Optional whitelist: if non-empty the tag is only valid at these charge points
     allowedChargePointIds: { type: [String], default: [] },
     note: { type: String },
+
+    /**
+     * Which prepaid wallet this tag spends from. Unset means the tag's own
+     * wallet (`IDTAG` / the idTag itself); pointing it at a `USER` wallet lets
+     * every card a driver owns draw on one account balance.
+     */
+    walletOwnerType: { type: String, enum: WALLET_OWNER_TYPES },
+    walletOwnerId: { type: String, index: true, sparse: true },
   },
   {
     timestamps: true,
