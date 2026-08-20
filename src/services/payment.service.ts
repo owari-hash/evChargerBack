@@ -298,6 +298,19 @@ export async function createPayment(input: CreatePaymentInput): Promise<PaymentD
 }
 
 /**
+ * QuickQR settles a payment as `SUCCESS`, where the merchant API says `PAID`.
+ * Both mean the money arrived, and `syncPayment` counts a leg as settled only
+ * when it reads `PAID` — so normalise before that comparison, or a paid invoice
+ * looks unpaid forever.
+ */
+function normaliseQuickQrStatus(status: string | undefined): string | undefined {
+  if (!status) return undefined;
+  const upper = status.toUpperCase();
+  if (upper === 'SUCCESS' || upper === 'PAID') return 'PAID';
+  return upper;
+}
+
+/**
  * Credit a settled top-up to its wallet. Keyed on `payment:<id>` so a QPay
  * callback and a reconciliation sweep arriving for the same invoice credit it
  * once. A wallet failure must never roll back a payment QPay has already taken,
@@ -370,23 +383,42 @@ export async function syncPayment(payment: PaymentDoc): Promise<PaymentDoc> {
   try {
     if (payment.provider === 'QPAY_QUICKQR') {
       const res = await quickqr.checkPayment(payment.invoiceId);
-      rows = (res.rows ?? []).map((r) => ({
-        paymentId: r.payment_id,
-        status: r.payment_status,
-        amount: num(r.payment_amount),
-        currency: r.payment_currency ?? 'MNT',
-        paymentWallet: r.payment_wallet,
-        transactionType: r.transaction_type,
-        paidAt: r.payment_date ? new Date(r.payment_date) : undefined,
+
+      // QuickQR reports under `payments`; the merchant-API `rows` spelling is
+      // accepted as a fallback so either shape parses.
+      rows = (res.payments ?? []).map((r) => ({
+        paymentId: String(r.id ?? ''),
+        status: normaliseQuickQrStatus(r.payment_status),
+        // The gross amount the customer paid. The nested `transactions[].amount`
+        // is the NET after QPay's fee — crediting that would short the driver.
+        amount: num(r.amount),
+        currency: r.currency ?? 'MNT',
+        paymentWallet: r.wallet_customer_id,
+        transactionType: r.paid_by,
+        paidAt: r.payment_status_date ? new Date(r.payment_status_date) : undefined,
       }));
+
+      if (rows.length === 0 && res.rows?.length) {
+        rows = res.rows.map((r) => ({
+          paymentId: String(r.payment_id ?? ''),
+          status: normaliseQuickQrStatus(r.payment_status),
+          amount: num(r.payment_amount),
+          currency: r.payment_currency ?? 'MNT',
+          paymentWallet: r.payment_wallet,
+          transactionType: r.transaction_type,
+          paidAt: r.payment_date ? new Date(r.payment_date) : undefined,
+        }));
+      }
+
+      // QuickQR sends no `paid_amount`; the settled legs are the only total.
       paidAmount = num(res.paid_amount);
-      if (rows.length === 0 && paidAmount === 0) {
-        // A settled invoice that reports nothing means we are reading the wrong
-        // fields, not that the customer has not paid. Log the shape once per
-        // check so the mapping can be corrected against a real response.
+
+      if (rows.length === 0 && res.invoice_status?.toUpperCase() === 'PAID') {
+        // The invoice says paid but carried no legs we could read — never treat
+        // that as unpaid, and leave the evidence for whoever has to reconcile it.
         qpayLogger.warn(
           { invoiceId: payment.invoiceId, response: res },
-          'QuickQR checkPayment returned no rows',
+          'QuickQR reports the invoice PAID but returned no readable payments',
         );
       }
     } else {

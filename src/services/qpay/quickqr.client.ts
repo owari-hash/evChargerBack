@@ -154,11 +154,49 @@ export const cancelInvoice = (invoiceId: string) =>
     label: 'DELETE /v2/invoice/:id (quickqr)',
   });
 
+/** One settlement leg QPay moved into the merchant's bank account. */
+export interface QuickQrTransaction {
+  id?: string;
+  description?: string;
+  account_bank_code?: string;
+  account_bank_name?: string;
+  account_number?: string;
+  status?: string;
+  /** NET of QPay's fee — smaller than what the customer paid. */
+  amount?: string | number;
+  currency?: string;
+}
+
+/**
+ * QuickQR's own payment-check shape, verified against a live settled invoice.
+ * It shares almost no field names with the merchant API: payments arrive under
+ * `payments` (not `rows`), each keyed `id`/`amount`/`payment_status_date`, the
+ * status reads `SUCCESS` rather than `PAID`, and there is no `paid_amount` —
+ * the invoice-level verdict is `invoice_status`.
+ */
 export interface QuickQrPaymentCheck {
+  id?: string;
+  invoice_status?: string;
+  invoice_status_date?: string;
+  payments?: {
+    id?: string;
+    terminal_id?: string;
+    wallet_customer_id?: string;
+    /** GROSS — what the customer actually paid. Credit this, not the net. */
+    amount?: string | number;
+    currency?: string;
+    payment_name?: string;
+    payment_description?: string;
+    paid_by?: string;
+    payment_status?: string;
+    payment_status_date?: string;
+    transactions?: QuickQrTransaction[];
+  }[];
+  /** Merchant-API spellings, kept so a future QPay change cannot break parsing. */
   count?: number;
   paid_amount?: string | number;
   rows?: {
-    payment_id: string;
+    payment_id?: string;
     payment_status?: string;
     payment_amount?: string | number;
     payment_currency?: string;
