@@ -127,6 +127,21 @@ export function toPaymentView(p: PaymentDoc | Record<string, unknown>): Record<s
 }
 
 /**
+ * QuickQR does not use one consistent spelling for the fields of a created
+ * invoice — `qr_image` and `urls` come back snake_cased while the id, the QR
+ * payload and the short URL have each been seen under several names. Resolve
+ * every spelling we have observed rather than binding to one, because a missing
+ * `invoice_id` strands the payment: it can never be checked or reconciled.
+ */
+function pickString(res: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = res[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+/**
  * Create a QPay invoice and the local Payment record that tracks it.
  *
  * The local record is written first so a QPay failure still leaves an auditable
@@ -227,10 +242,19 @@ export async function createPayment(input: CreatePaymentInput): Promise<PaymentD
         callback_url: callbackUrl,
         bank_accounts: input.bankAccounts ?? (defaultAccount ? [defaultAccount] : undefined),
       });
-      payment.invoiceId = res.invoice_id;
-      payment.qrText = res.qr_text;
-      payment.qrImage = res.qr_image;
-      payment.shortUrl = res.qPay_shortUrl;
+      const raw = res as unknown as Record<string, unknown>;
+      const invoiceId = pickString(raw, 'invoice_id', 'invoiceId', 'id');
+      if (!invoiceId) {
+        // Surface the real shape once; the invoice is unusable without an id.
+        qpayLogger.error(
+          { keys: Object.keys(raw), senderInvoiceNo },
+          'QuickQR createInvoice returned no recognisable invoice id',
+        );
+      }
+      payment.invoiceId = invoiceId;
+      payment.qrText = pickString(raw, 'qr_text', 'qrText', 'qPay_QRcode', 'qRcode', 'qrcode');
+      payment.qrImage = pickString(raw, 'qr_image', 'qrImage');
+      payment.shortUrl = pickString(raw, 'qPay_shortUrl', 'qPay_shorturl', 'short_url', 'shortUrl');
       payment.deeplinks = (res.urls ?? []) as typeof payment.deeplinks;
     } else {
       const res = await merchant.createInvoice({
