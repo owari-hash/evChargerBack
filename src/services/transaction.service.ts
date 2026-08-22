@@ -1,3 +1,4 @@
+import type { Types } from 'mongoose';
 import { nextSequence } from '../lib/counters';
 import { logger } from '../lib/logger';
 import { ChargePoint } from '../models/ChargePoint';
@@ -12,7 +13,10 @@ import { storeMeterValues } from './meter.service';
 import { chargeSessionToWallet } from './wallet.service';
 
 export interface StartTransactionInput {
-  chargePointId: string;
+  /** The charge point's `_id`, which is what the records reference. */
+  chargePointId: Types.ObjectId;
+  /** Its OCPP identifier, for the events published to subscribers. */
+  cpId: string;
   connectorId: number;
   idTag: string;
   meterStart: number;
@@ -62,7 +66,7 @@ export async function startTransaction(
       }).catch(() => undefined);
     }
 
-    bus.emitEvent('transaction.started', input.chargePointId, {
+    bus.emitEvent('transaction.started', input.cpId, {
       transactionId,
       connectorId: input.connectorId,
       idTag: input.idTag,
@@ -75,7 +79,8 @@ export async function startTransaction(
 }
 
 export interface StopTransactionInput {
-  chargePointId: string;
+  chargePointId: Types.ObjectId;
+  cpId: string;
   transactionId: number;
   meterStop: number;
   timestamp: Date;
@@ -91,7 +96,7 @@ export async function stopTransaction(
 
   if (!tx) {
     logger.warn(
-      { cp: input.chargePointId, transactionId: input.transactionId },
+      { cp: input.cpId, transactionId: input.transactionId },
       'StopTransaction for an unknown transaction',
     );
     // Still acknowledge; the charge point cannot do anything useful with an error.
@@ -103,6 +108,7 @@ export async function stopTransaction(
   if (input.transactionData?.length) {
     await storeMeterValues(
       input.chargePointId,
+      input.cpId,
       tx.connectorId,
       tx._id,
       input.transactionData,
@@ -127,7 +133,7 @@ export async function stopTransaction(
       { $set: { currentTransactionId: null } },
     ).catch(() => undefined);
 
-    bus.emitEvent('transaction.stopped', input.chargePointId, {
+    bus.emitEvent('transaction.stopped', input.cpId, {
       transactionId: tx._id,
       connectorId: tx.connectorId,
       idTag: tx.idTag,
@@ -166,7 +172,8 @@ export async function stopTransaction(
 
 /** Close transactions left dangling by a charge point that rebooted mid-charge. */
 export async function closeOrphanedTransactions(
-  chargePointId: string,
+  chargePointId: Types.ObjectId,
+  cpId: string,
   reason: StopReason = 'PowerLoss',
 ): Promise<number> {
   const open = await Transaction.find({ chargePointId, status: 'Active' });
@@ -180,7 +187,7 @@ export async function closeOrphanedTransactions(
       tx.cost = Number(((tx.energyWh / 1000) * tx.tariffPerKwh).toFixed(4));
     }
     await tx.save();
-    bus.emitEvent('transaction.stopped', chargePointId, {
+    bus.emitEvent('transaction.stopped', cpId, {
       transactionId: tx._id,
       reason,
       orphaned: true,

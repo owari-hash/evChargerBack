@@ -2,7 +2,7 @@ import { Schema, model, type InferSchemaType, type HydratedDocument } from 'mong
 
 const configurationKeySchema = new Schema(
   {
-    chargePointId: { type: String, required: true, index: true },
+    chargePointId: { type: Schema.Types.ObjectId, ref: 'ChargePoint', required: true, index: true },
     key: { type: String, required: true },
     value: { type: String },
     readonly: { type: Boolean, default: false },

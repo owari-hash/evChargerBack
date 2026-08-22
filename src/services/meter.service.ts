@@ -1,3 +1,4 @@
+import type { Types } from 'mongoose';
 import { MeterValue } from '../models/MeterValue';
 import { Transaction } from '../models/Transaction';
 import { Connector } from '../models/Connector';
@@ -46,7 +47,8 @@ function extract(entry: MeterValueEntry): Extracted {
  * the transaction and connector documents for cheap dashboard queries.
  */
 export async function storeMeterValues(
-  chargePointId: string,
+  chargePointId: Types.ObjectId,
+  cpId: string,
   connectorId: number,
   transactionId: number | undefined,
   entries: MeterValueEntry[],
@@ -97,7 +99,7 @@ export async function storeMeterValues(
     }
   }
 
-  bus.emitEvent('transaction.metervalue', chargePointId, {
+  bus.emitEvent('transaction.metervalue', cpId, {
     connectorId,
     transactionId: transactionId ?? null,
     timestamp: latest.timestamp,

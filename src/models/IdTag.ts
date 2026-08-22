@@ -14,7 +14,9 @@ const idTagSchema = new Schema(
     // How many transactions this tag may have running at once (0 = unlimited)
     maxActiveTransactions: { type: Number, default: 1 },
     // Optional whitelist: if non-empty the tag is only valid at these charge points
-    allowedChargePointIds: { type: [String], default: [] },
+    /** Restricts the tag to these charge points; empty means anywhere. Stored
+     *  as references so renaming a station cannot silently widen or void it. */
+    allowedChargePointIds: { type: [{ type: Schema.Types.ObjectId, ref: 'ChargePoint' }], default: [] },
     note: { type: String },
 
     /**
@@ -45,7 +47,7 @@ export const IdTag = model('IdTag', idTagSchema);
 
 const localAuthEntrySchema = new Schema(
   {
-    chargePointId: { type: String, required: true, index: true },
+    chargePointId: { type: Schema.Types.ObjectId, ref: 'ChargePoint', required: true, index: true },
     idTag: { type: String, required: true },
     status: { type: String, enum: AUTHORIZATION_STATUSES, default: 'Accepted' },
     parentIdTag: { type: String },
@@ -63,11 +65,17 @@ export const LocalAuthListEntry = model('LocalAuthListEntry', localAuthEntrySche
 /** Tracks the local authorization list version currently held by each charge point. */
 const localListVersionSchema = new Schema(
   {
-    _id: { type: String, required: true }, // chargePointId
+    chargePointId: {
+      type: Schema.Types.ObjectId,
+      ref: 'ChargePoint',
+      required: true,
+      unique: true,
+      index: true,
+    },
     version: { type: Number, default: 0 },
     lastSyncedAt: { type: Date },
   },
-  { _id: false, timestamps: true },
+  { timestamps: true },
 );
 
 export const LocalListVersion = model('LocalListVersion', localListVersionSchema);

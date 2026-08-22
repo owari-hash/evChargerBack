@@ -12,15 +12,24 @@ import { Transaction } from '../../models/Transaction';
 import { Certificate } from '../../models/Security';
 import { connectionManager } from '../../ocpp/manager';
 import { parseCertificate } from '../../services/ca.service';
+import { chargePointOf, resolveChargePointParam } from '../../lib/chargePointRef';
 import { asyncHandler, requireAuth, requireOperator, validate } from '../middleware';
 
 export const commandsRouter = Router();
 commandsRouter.use(requireAuth, requireOperator);
 
+// Every route here is scoped to one station, so `:id` is resolved once and the
+// handlers below take the reference for queries and the OCPP identifier for the
+// connection registry from `req.chargePoint`.
+commandsRouter.param('id', resolveChargePointParam);
+
 const issuer = (req: Request) => req.user?.email ?? 'api';
 
+/** The charge point's `_id` — what the records reference. */
+const ref = (req: Request) => chargePointOf(req)._id;
+
 const send = <T = unknown>(req: Request, action: string, payload: unknown) =>
-  connectionManager.send<T>(req.params.id!, action, payload, issuer(req));
+  connectionManager.send<T>(chargePointOf(req).cpId, action, payload, issuer(req));
 
 // ---------------------------------------------------------------------------
 // Core profile
@@ -54,7 +63,7 @@ commandsRouter.post(
     const body = req.body as z.infer<typeof remoteStopSchema>;
     const tx = await Transaction.findById(body.transactionId).lean();
     if (!tx) throw notFound('Transaction not found');
-    if (tx.chargePointId !== req.params.id) {
+    if (!ref(req).equals(tx.chargePointId)) {
       throw badRequest('Transaction does not belong to this charge point');
     }
     const result = await send(req, 'RemoteStopTransaction', body);
@@ -99,8 +108,8 @@ commandsRouter.post(
     if (result.status === 'Accepted') {
       const filter =
         body.connectorId === 0
-          ? { chargePointId: req.params.id }
-          : { chargePointId: req.params.id, connectorId: body.connectorId };
+          ? { chargePointId: ref(req) }
+          : { chargePointId: ref(req), connectorId: body.connectorId };
       await Connector.updateMany(filter, { $set: { availability: body.type } });
     }
     res.json(result);
@@ -122,7 +131,7 @@ commandsRouter.post(
       // AuthorizationKey is write-only (white paper A01.FR.11); never store its value.
       const value = body.key === 'AuthorizationKey' ? undefined : body.value;
       await ConfigurationKey.updateOne(
-        { chargePointId: req.params.id, key: body.key },
+        { chargePointId: ref(req), key: body.key },
         { $set: { value, known: true } },
         { upsert: true },
       );
@@ -145,20 +154,20 @@ commandsRouter.post(
     const ops = [
       ...(result.configurationKey ?? []).map((k) => ({
         updateOne: {
-          filter: { chargePointId: req.params.id!, key: k.key },
+          filter: { chargePointId: ref(req), key: k.key },
           update: {
             $set: { value: k.value ?? null, readonly: k.readonly, known: true },
-            $setOnInsert: { chargePointId: req.params.id!, key: k.key },
+            $setOnInsert: { chargePointId: ref(req), key: k.key },
           },
           upsert: true,
         },
       })),
       ...(result.unknownKey ?? []).map((key) => ({
         updateOne: {
-          filter: { chargePointId: req.params.id!, key },
+          filter: { chargePointId: ref(req), key },
           update: {
             $set: { known: false },
-            $setOnInsert: { chargePointId: req.params.id!, key },
+            $setOnInsert: { chargePointId: ref(req), key },
           },
           upsert: true,
         },
@@ -246,7 +255,7 @@ commandsRouter.post(
 
     await Reservation.create({
       _id: reservationId,
-      chargePointId: req.params.id,
+      chargePointId: ref(req),
       connectorId: body.connectorId,
       idTag: body.idTag,
       parentIdTag: body.parentIdTag,
@@ -330,7 +339,7 @@ commandsRouter.post(
 
     if (result.status === 'Accepted') {
       await ChargingProfile.updateOne(
-        { chargePointId: req.params.id, chargingProfileId },
+        { chargePointId: ref(req), chargingProfileId },
         {
           $set: {
             connectorId: body.connectorId,
@@ -344,7 +353,7 @@ commandsRouter.post(
             chargingSchedule: p.chargingSchedule,
             isActive: true,
           },
-          $setOnInsert: { chargePointId: req.params.id, chargingProfileId },
+          $setOnInsert: { chargePointId: ref(req), chargingProfileId },
         },
         { upsert: true },
       );
@@ -371,7 +380,7 @@ commandsRouter.post(
     const result = await send<{ status: string }>(req, 'ClearChargingProfile', body);
 
     if (result.status === 'Accepted') {
-      const filter: Record<string, unknown> = { chargePointId: req.params.id };
+      const filter: Record<string, unknown> = { chargePointId: ref(req) };
       if (body.id !== undefined) filter.chargingProfileId = body.id;
       if (body.connectorId !== undefined) filter.connectorId = body.connectorId;
       if (body.chargingProfilePurpose) filter.chargingProfilePurpose = body.chargingProfilePurpose;
@@ -406,7 +415,7 @@ commandsRouter.post(
   asyncHandler(async (req, res) => {
     const result = await send<{ listVersion: number }>(req, 'GetLocalListVersion', {});
     await LocalListVersion.updateOne(
-      { _id: req.params.id },
+      { chargePointId: ref(req) },
       { $set: { version: result.listVersion, lastSyncedAt: new Date() } },
       { upsert: true },
     );
@@ -425,7 +434,7 @@ commandsRouter.post(
   validate(sendLocalListSchema),
   asyncHandler(async (req, res) => {
     const body = req.body as z.infer<typeof sendLocalListSchema>;
-    const chargePointId = req.params.id!;
+    const chargePointId = ref(req);
 
     const filter = body.idTags ? { _id: { $in: body.idTags } } : {};
     const tags = await IdTag.find(filter).lean();
@@ -448,7 +457,7 @@ commandsRouter.post(
 
     if (result.status === 'Accepted') {
       await LocalListVersion.updateOne(
-        { _id: chargePointId },
+        { chargePointId },
         { $set: { version: listVersion, lastSyncedAt: new Date() } },
         { upsert: true },
       );
@@ -497,7 +506,7 @@ commandsRouter.post(
   asyncHandler(async (req, res) => {
     const body = req.body as z.infer<typeof updateFirmwareSchema>;
     const job = await FirmwareJob.create({
-      chargePointId: req.params.id,
+      chargePointId: ref(req),
       kind: 'UpdateFirmware',
       location: body.location,
       retrieveDate: body.retrieveDate,
@@ -539,7 +548,7 @@ commandsRouter.post(
     });
 
     const job = await DiagnosticsJob.create({
-      chargePointId: req.params.id,
+      chargePointId: ref(req),
       kind: 'GetDiagnostics',
       location: body.location,
       oldestTimestamp: body.startTime,
@@ -609,7 +618,7 @@ commandsRouter.post(
     });
 
     const job = await DiagnosticsJob.create({
-      chargePointId: req.params.id,
+      chargePointId: ref(req),
       kind: 'GetLog',
       requestId,
       location: body.remoteLocation,
@@ -643,7 +652,7 @@ commandsRouter.post(
 
     if (result.status === 'Accepted') {
       await Certificate.create({
-        chargePointId: req.params.id,
+        chargePointId: ref(req),
         type: body.certificateType,
         pem: body.certificate,
         serialNumber: parsed.serialNumber,
@@ -692,7 +701,7 @@ commandsRouter.post(
     if (result.status === 'Accepted') {
       await Certificate.updateMany(
         {
-          chargePointId: req.params.id,
+          chargePointId: ref(req),
           serialNumber: body.certificateHashData.serialNumber,
           issuerKeyHash: body.certificateHashData.issuerKeyHash,
         },
@@ -731,7 +740,7 @@ commandsRouter.post(
     const requestId = await nextSequence('requestId');
 
     const job = await FirmwareJob.create({
-      chargePointId: req.params.id,
+      chargePointId: ref(req),
       kind: 'SignedUpdateFirmware',
       requestId,
       location: body.location,

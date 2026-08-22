@@ -51,10 +51,10 @@ async function main(): Promise<void> {
 
   // --- demo charge point ---
   const demoId = 'CP-DEMO-001';
-  if (!(await ChargePoint.exists({ _id: demoId }))) {
+  if (!(await ChargePoint.exists({ cpId: demoId }))) {
     const key = randomBytes(20).toString('hex');
-    await ChargePoint.create({
-      _id: demoId,
+    const demo = await ChargePoint.create({
+      cpId: demoId,
       name: 'Demo charge point',
       authorizationKeyHash: await bcrypt.hash(key, 12),
       securityProfile: 1,
@@ -64,8 +64,8 @@ async function main(): Promise<void> {
     await Connector.bulkWrite(
       [0, 1, 2].map((connectorId) => ({
         updateOne: {
-          filter: { chargePointId: demoId, connectorId },
-          update: { $setOnInsert: { chargePointId: demoId, connectorId } },
+          filter: { chargePointId: demo._id, connectorId },
+          update: { $setOnInsert: { chargePointId: demo._id, connectorId } },
           upsert: true,
         },
       })),

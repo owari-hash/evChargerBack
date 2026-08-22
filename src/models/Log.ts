@@ -5,7 +5,7 @@ import { env } from '../config/env';
 /** Raw OCPP-J frame audit trail. */
 const ocppMessageLogSchema = new Schema(
   {
-    chargePointId: { type: String, required: true, index: true },
+    chargePointId: { type: Schema.Types.ObjectId, ref: 'ChargePoint', required: true, index: true },
     direction: { type: String, enum: MESSAGE_DIRECTIONS, required: true },
     messageTypeId: { type: Number, required: true }, // 2 CALL, 3 CALLRESULT, 4 CALLERROR
     uniqueId: { type: String, required: true, index: true },
@@ -42,7 +42,7 @@ export const OcppMessageLog = model('OcppMessageLog', ocppMessageLogSchema);
 /** One row per Central System -> Charge Point command, with its result. */
 const commandLogSchema = new Schema(
   {
-    chargePointId: { type: String, required: true, index: true },
+    chargePointId: { type: Schema.Types.ObjectId, ref: 'ChargePoint', required: true, index: true },
     action: { type: String, required: true, index: true },
     uniqueId: { type: String, required: true },
     request: { type: Schema.Types.Mixed },

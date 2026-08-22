@@ -6,7 +6,7 @@ const transactionSchema = new Schema(
     // OCPP transactionId — an integer allocated by us via the Counter collection
     _id: { type: Number, required: true },
 
-    chargePointId: { type: String, required: true, index: true },
+    chargePointId: { type: Schema.Types.ObjectId, ref: 'ChargePoint', required: true, index: true },
     connectorId: { type: Number, required: true },
     idTag: { type: String, required: true, index: true },
     status: { type: String, enum: TRANSACTION_STATUSES, default: 'Active', index: true },

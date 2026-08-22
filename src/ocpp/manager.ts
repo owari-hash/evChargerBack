@@ -14,51 +14,52 @@ class ConnectionManager {
   private readonly connections = new Map<string, ChargePointConnection>();
 
   add(conn: ChargePointConnection): void {
-    const existing = this.connections.get(conn.chargePointId);
+    const existing = this.connections.get(conn.cpId);
     if (existing && existing !== conn) {
       ocppLogger.info(
-        { cp: conn.chargePointId },
+        { cp: conn.cpId },
         'replacing existing connection for charge point',
       );
       existing.close(1000, 'Superseded by a new connection');
     }
-    this.connections.set(conn.chargePointId, conn);
+    this.connections.set(conn.cpId, conn);
   }
 
-  remove(chargePointId: string, conn?: ChargePointConnection): void {
-    const current = this.connections.get(chargePointId);
+  remove(cpId: string, conn?: ChargePointConnection): void {
+    const current = this.connections.get(cpId);
     if (!current) return;
     if (conn && current !== conn) return; // a newer connection already took over
-    this.connections.delete(chargePointId);
+    this.connections.delete(cpId);
   }
 
-  get(chargePointId: string): ChargePointConnection | undefined {
-    const c = this.connections.get(chargePointId);
+  get(cpId: string): ChargePointConnection | undefined {
+    const c = this.connections.get(cpId);
     return c?.isOpen ? c : undefined;
   }
 
-  isOnline(chargePointId: string): boolean {
-    return this.get(chargePointId) !== undefined;
+  isOnline(cpId: string): boolean {
+    return this.get(cpId) !== undefined;
   }
 
-  onlineIds(): string[] {
+  /** OCPP identifiers of every station currently connected. */
+  onlineCpIds(): string[] {
     return [...this.connections.entries()].filter(([, c]) => c.isOpen).map(([id]) => id);
   }
 
   get size(): number {
-    return this.onlineIds().length;
+    return this.onlineCpIds().length;
   }
 
   /** Send a command to a charge point, or throw 503 if it is not connected. */
   async send<T = unknown>(
-    chargePointId: string,
+    cpId: string,
     action: OcppAction | string,
     payload: unknown,
     issuedBy?: string,
   ): Promise<T> {
-    const conn = this.get(chargePointId);
+    const conn = this.get(cpId);
     if (!conn) {
-      throw serviceUnavailable(`Charge point ${chargePointId} is not connected`);
+      throw serviceUnavailable(`Charge point ${cpId} is not connected`);
     }
     return conn.call<T>(action, payload, issuedBy);
   }

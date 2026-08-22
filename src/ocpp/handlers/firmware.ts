@@ -15,7 +15,7 @@ export async function onFirmwareStatusNotification(
   payload: Req<typeof profiles.FirmwareStatusNotificationReq>,
   conn: ChargePointConnection,
 ) {
-  await applyFirmwareStatus(conn.chargePointId, payload.status, undefined);
+  await applyFirmwareStatus(conn, payload.status, undefined);
   return {};
 }
 
@@ -24,15 +24,18 @@ export async function onSignedFirmwareStatusNotification(
   payload: Req<typeof security.SignedFirmwareStatusNotificationReq>,
   conn: ChargePointConnection,
 ) {
-  await applyFirmwareStatus(conn.chargePointId, payload.status, payload.requestId);
+  await applyFirmwareStatus(conn, payload.status, payload.requestId);
   return {};
 }
 
+/** Takes the connection rather than an identifier because it needs both: the
+ *  reference to query and update, and the OCPP identifier to log and publish. */
 async function applyFirmwareStatus(
-  chargePointId: string,
+  conn: ChargePointConnection,
   status: string,
   requestId?: number,
 ): Promise<void> {
+  const chargePointId = conn.ref;
   const filter = requestId !== undefined ? { chargePointId, requestId } : { chargePointId };
   const job = await FirmwareJob.findOne(filter).sort({ createdAt: -1 });
 
@@ -41,24 +44,24 @@ async function applyFirmwareStatus(
     job.statusHistory.push({ status, at: new Date() });
     await job.save();
   } else if (status !== 'Idle') {
-    ocppLogger.debug({ cp: chargePointId, status }, 'firmware status without a matching job');
+    ocppLogger.debug({ cp: conn.cpId, status }, 'firmware status without a matching job');
   }
 
   if (status === 'Installed') {
     await ChargePoint.findByIdAndUpdate(chargePointId, {
       $unset: { firmwareVersion: '' },
     }).catch(() => undefined);
-    await recordSecurityEvent(chargePointId, 'FirmwareUpdated', `job=${job?.id ?? 'unknown'}`);
+    await recordSecurityEvent(conn.cpId, 'FirmwareUpdated', `job=${job?.id ?? 'unknown'}`);
   }
   if (status === 'InvalidSignature') {
     await recordSecurityEvent(
-      chargePointId,
+      conn.cpId,
       'InvalidFirmwareSignature',
       `job=${job?.id ?? 'unknown'}`,
     );
   }
 
-  bus.emitEvent('firmware.status', chargePointId, { status, requestId, jobId: job?.id });
+  bus.emitEvent('firmware.status', conn.cpId, { status, requestId, jobId: job?.id });
 }
 
 export async function onDiagnosticsStatusNotification(
@@ -66,7 +69,7 @@ export async function onDiagnosticsStatusNotification(
   conn: ChargePointConnection,
 ) {
   const job = await DiagnosticsJob.findOne({
-    chargePointId: conn.chargePointId,
+    chargePointId: conn.ref,
     kind: 'GetDiagnostics',
   }).sort({ createdAt: -1 });
 
@@ -76,7 +79,7 @@ export async function onDiagnosticsStatusNotification(
     await job.save();
   }
 
-  bus.emitEvent('diagnostics.status', conn.chargePointId, {
+  bus.emitEvent('diagnostics.status', conn.cpId, {
     status: payload.status,
     jobId: job?.id,
   });
@@ -90,8 +93,8 @@ export async function onLogStatusNotification(
 ) {
   const filter =
     payload.requestId !== undefined
-      ? { chargePointId: conn.chargePointId, requestId: payload.requestId }
-      : { chargePointId: conn.chargePointId, kind: 'GetLog' };
+      ? { chargePointId: conn.ref, requestId: payload.requestId }
+      : { chargePointId: conn.ref, kind: 'GetLog' };
 
   const job = await DiagnosticsJob.findOne(filter).sort({ createdAt: -1 });
   if (job) {
@@ -100,7 +103,7 @@ export async function onLogStatusNotification(
     await job.save();
   }
 
-  bus.emitEvent('log.status', conn.chargePointId, {
+  bus.emitEvent('log.status', conn.cpId, {
     status: payload.status,
     requestId: payload.requestId,
     jobId: job?.id,

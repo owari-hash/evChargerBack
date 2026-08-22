@@ -14,7 +14,7 @@ export async function onSecurityEventNotification(
   conn: ChargePointConnection,
 ) {
   await recordSecurityEvent(
-    conn.chargePointId,
+    conn.cpId,
     payload.type,
     payload.techInfo,
     'ChargePoint',
@@ -35,7 +35,7 @@ export async function onSignCertificate(
   conn: ChargePointConnection,
 ) {
   const record = await CsrRequest.create({
-    chargePointId: conn.chargePointId,
+    chargePointId: conn.ref,
     csrPem: payload.csr,
     status: 'Pending',
   });
@@ -52,7 +52,7 @@ async function processCsr(csrId: string, conn: ChargePointConnection): Promise<v
   if (!record) return;
 
   try {
-    const signed = signCsr(record.csrPem, conn.chargePointId);
+    const signed = signCsr(record.csrPem, conn.cpId);
 
     record.certificatePem = signed.certificatePem;
     record.subject = signed.subject;
@@ -60,7 +60,7 @@ async function processCsr(csrId: string, conn: ChargePointConnection): Promise<v
     await record.save();
 
     await Certificate.create({
-      chargePointId: conn.chargePointId,
+      chargePointId: conn.ref,
       type: 'ChargePointCertificate',
       pem: signed.certificatePem,
       serialNumber: signed.serialNumber,
@@ -84,19 +84,19 @@ async function processCsr(csrId: string, conn: ChargePointConnection): Promise<v
 
     if (res.status !== 'Accepted') {
       await recordSecurityEvent(
-        conn.chargePointId,
+        conn.cpId,
         'InvalidChargePointCertificate',
         'CertificateSigned.req was rejected by the charge point',
         'CentralSystem',
       );
     }
   } catch (err) {
-    ocppLogger.error({ err, cp: conn.chargePointId }, 'failed to process CSR');
+    ocppLogger.error({ err, cp: conn.cpId }, 'failed to process CSR');
     record.status = 'Failed';
     record.failureReason = (err as Error).message;
     await record.save().catch(() => undefined);
     await recordSecurityEvent(
-      conn.chargePointId,
+      conn.cpId,
       'InvalidChargePointCertificate',
       `CSR processing failed: ${(err as Error).message}`,
       'CentralSystem',

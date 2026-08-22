@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { chargePointRefs, optionalChargePointRef } from '../../lib/chargePointRef';
 import { z } from 'zod';
 import { conflict, notFound } from '../../lib/errors';
 import { IdTag, LocalAuthListEntry } from '../../models/IdTag';
@@ -73,8 +74,14 @@ idTagsRouter.post(
     if (await IdTag.exists({ _id: body.idTag })) {
       throw conflict(`idTag "${body.idTag}" already exists`);
     }
-    const { idTag, ...rest } = body;
-    const doc = await IdTag.create({ _id: idTag, ...rest });
+    const { idTag, allowedChargePointIds, ...rest } = body;
+    const doc = await IdTag.create({
+      _id: idTag,
+      ...rest,
+      ...(allowedChargePointIds
+        ? { allowedChargePointIds: await chargePointRefs(allowedChargePointIds) }
+        : {}),
+    });
     res.status(201).json(doc.toJSON());
   }),
 );
@@ -99,7 +106,17 @@ idTagsRouter.patch(
   requireOperator,
   validate(updateSchema),
   asyncHandler(async (req, res) => {
-    const tag = await IdTag.findByIdAndUpdate(req.params.idTag, req.body, { new: true });
+    const body = req.body as z.infer<typeof updateSchema>;
+    const tag = await IdTag.findByIdAndUpdate(
+      req.params.idTag,
+      {
+        ...body,
+        ...(body.allowedChargePointIds
+          ? { allowedChargePointIds: await chargePointRefs(body.allowedChargePointIds) }
+          : {}),
+      },
+      { new: true },
+    );
     if (!tag) throw notFound('idTag not found');
     res.json(tag.toJSON());
   }),
@@ -120,9 +137,12 @@ idTagsRouter.delete(
 idTagsRouter.post(
   '/:idTag/authorize-check',
   asyncHandler(async (req, res) => {
-    const chargePointId =
-      typeof req.body?.chargePointId === 'string' ? req.body.chargePointId : undefined;
-    res.json(await authorizeIdTag(req.params.idTag, { chargePointId }));
+    const named = typeof req.body?.chargePointId === 'string' ? req.body.chargePointId : undefined;
+    res.json(
+      await authorizeIdTag(req.params.idTag, {
+        chargePointId: await optionalChargePointRef(named),
+      }),
+    );
   }),
 );
 
@@ -135,8 +155,21 @@ idTagsRouter.post(
   validate(bulkSchema),
   asyncHandler(async (req, res) => {
     const body = req.body as z.infer<typeof bulkSchema>;
+    // The allow-list is written by station name but stored by reference, so
+    // renaming a station cannot silently widen or void a tag's restriction.
+    const prepared = await Promise.all(
+      body.tags.map(async ({ idTag, allowedChargePointIds, ...rest }) => ({
+        idTag,
+        rest: {
+          ...rest,
+          ...(allowedChargePointIds
+            ? { allowedChargePointIds: await chargePointRefs(allowedChargePointIds) }
+            : {}),
+        },
+      })),
+    );
     const result = await IdTag.bulkWrite(
-      body.tags.map(({ idTag, ...rest }) => ({
+      prepared.map(({ idTag, rest }) => ({
         updateOne: {
           filter: { _id: idTag },
           update: { $set: rest, $setOnInsert: { _id: idTag } },

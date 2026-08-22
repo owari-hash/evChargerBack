@@ -57,7 +57,7 @@ const paymentSchema = new Schema(
 
     /** What is being paid for. */
     transactionId: { type: Number, index: true, sparse: true }, // OCPP transaction
-    chargePointId: { type: String, index: true },
+    chargePointId: { type: Schema.Types.ObjectId, ref: 'ChargePoint', index: true },
     connectorId: { type: Number },
     idTag: { type: String, index: true },
     userId: { type: String },

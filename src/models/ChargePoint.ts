@@ -3,8 +3,13 @@ import { REGISTRATION_STATUSES } from './enums';
 
 const chargePointSchema = new Schema(
   {
-    // The OCPP chargePointId taken from the WebSocket connect URL. Used as _id.
-    _id: { type: String, required: true },
+    /**
+      * The OCPP identifier taken from the WebSocket connect URL. It is the name
+      * the station authenticates with and can be changed by an operator, so it
+      * is an ordinary indexed field rather than the primary key — `_id` is a
+      * generated ObjectId that nothing outside this collection has to follow.
+      */
+    cpId: { type: String, required: true, unique: true, index: true },
 
     name: { type: String },
     description: { type: String },
@@ -46,10 +51,9 @@ const chargePointSchema = new Schema(
   },
   {
     timestamps: true,
-    _id: false,
     toJSON: {
       transform(_doc, ret: Record<string, unknown>) {
-        ret.id = ret._id;
+        ret.id = String(ret._id);
         delete ret.authorizationKeyHash;
         delete ret.__v;
         return ret;

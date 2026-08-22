@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { cpIdsFor, requireChargePointRef } from '../../lib/chargePointRef';
 import { z } from 'zod';
 import { ChargePoint } from '../../models/ChargePoint';
 import { ChargingProfile } from '../../models/ChargingProfile';
@@ -37,7 +38,7 @@ reservationsRouter.get(
   asyncHandler(async (req, res) => {
     const q = req.query as unknown as z.infer<typeof reservationQuery>;
     const filter: Record<string, unknown> = {};
-    if (q.chargePointId) filter.chargePointId = q.chargePointId;
+    if (q.chargePointId) filter.chargePointId = await requireChargePointRef(q.chargePointId);
     if (q.state) filter.state = q.state;
 
     const { skip, limit } = paginate(q);
@@ -69,7 +70,7 @@ chargingProfilesRouter.get(
       chargePointId?: string;
     };
     const filter: Record<string, unknown> = {};
-    if (q.chargePointId) filter.chargePointId = q.chargePointId;
+    if (q.chargePointId) filter.chargePointId = await requireChargePointRef(q.chargePointId);
 
     const { skip, limit } = paginate(q);
     const [data, total] = await Promise.all([
@@ -94,7 +95,9 @@ jobsRouter.get(
   validate(jobQuery, 'query'),
   asyncHandler(async (req, res) => {
     const q = req.query as unknown as z.infer<typeof jobQuery>;
-    const filter = q.chargePointId ? { chargePointId: q.chargePointId } : {};
+    const filter = q.chargePointId
+      ? { chargePointId: await requireChargePointRef(q.chargePointId) }
+      : {};
     const { skip, limit } = paginate(q);
     const [data, total] = await Promise.all([
       FirmwareJob.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
@@ -109,7 +112,9 @@ jobsRouter.get(
   validate(jobQuery, 'query'),
   asyncHandler(async (req, res) => {
     const q = req.query as unknown as z.infer<typeof jobQuery>;
-    const filter = q.chargePointId ? { chargePointId: q.chargePointId } : {};
+    const filter = q.chargePointId
+      ? { chargePointId: await requireChargePointRef(q.chargePointId) }
+      : {};
     const { skip, limit } = paginate(q);
     const [data, total] = await Promise.all([
       DiagnosticsJob.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
@@ -141,7 +146,7 @@ meterValuesRouter.get(
   asyncHandler(async (req, res) => {
     const q = req.query as unknown as z.infer<typeof meterQuery>;
     const filter: Record<string, unknown> = {};
-    if (q.chargePointId) filter.chargePointId = q.chargePointId;
+    if (q.chargePointId) filter.chargePointId = await requireChargePointRef(q.chargePointId);
     if (q.connectorId !== undefined) filter.connectorId = q.connectorId;
     if (q.transactionId !== undefined) filter.transactionId = q.transactionId;
     if (q.measurand) filter['sampledValue.measurand'] = q.measurand;
@@ -234,7 +239,7 @@ statsRouter.get(
       status: 'Completed',
       stopTimestamp: { $gte: since },
     };
-    if (q.chargePointId) match.chargePointId = q.chargePointId;
+    if (q.chargePointId) match.chargePointId = await requireChargePointRef(q.chargePointId);
 
     const data = await Transaction.aggregate([
       { $match: match },
@@ -289,7 +294,16 @@ statsRouter.get(
         },
       },
     ]);
-    res.json(data);
+
+    // Grouping happens on the reference; the reply names the stations.
+    const labels = await cpIdsFor(data.map((row: { chargePointId?: unknown }) => row.chargePointId as string));
+    res.json(
+      data.map((row: { chargePointId?: unknown }) => ({
+        ...row,
+        id: String(row.chargePointId),
+        chargePointId: labels.get(String(row.chargePointId)) ?? String(row.chargePointId),
+      })),
+    );
   }),
 );
 
@@ -312,7 +326,7 @@ connectorsRouter.get(
       status?: string;
     };
     const filter: Record<string, unknown> = {};
-    if (q.chargePointId) filter.chargePointId = q.chargePointId;
+    if (q.chargePointId) filter.chargePointId = await requireChargePointRef(q.chargePointId);
     if (q.status) filter.status = q.status;
 
     const { skip, limit } = paginate(q);

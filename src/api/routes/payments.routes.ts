@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { optionalChargePointRef, requireChargePointRef } from '../../lib/chargePointRef';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { env } from '../../config/env';
@@ -123,7 +124,11 @@ paymentsRouter.post(
   requireOperator,
   validate(createSchema),
   asyncHandler(async (req, res) => {
-    const payment = await createPayment(req.body as z.infer<typeof createSchema>);
+    const input = req.body as z.infer<typeof createSchema>;
+    const payment = await createPayment({
+      ...input,
+      chargePointId: await optionalChargePointRef(input.chargePointId),
+    });
     res.status(201).json(toPaymentView(payment));
   }),
 );
@@ -134,8 +139,10 @@ paymentsRouter.post(
   requireOperator,
   validate(createSchema.omit({ transactionId: true })),
   asyncHandler(async (req, res) => {
+    const input = req.body as z.infer<typeof createSchema>;
     const payment = await createPayment({
-      ...(req.body as z.infer<typeof createSchema>),
+      ...input,
+      chargePointId: await optionalChargePointRef(input.chargePointId),
       transactionId: Number(req.params.transactionId),
     });
     res.status(201).json(toPaymentView(payment));
@@ -159,7 +166,7 @@ paymentsRouter.get(
     const q = req.query as unknown as z.infer<typeof listQuery>;
     const filter: Record<string, unknown> = {};
     if (q.status) filter.status = q.status;
-    if (q.chargePointId) filter.chargePointId = q.chargePointId;
+    if (q.chargePointId) filter.chargePointId = await requireChargePointRef(q.chargePointId);
     if (q.idTag) filter.idTag = q.idTag;
     if (q.transactionId !== undefined) filter.transactionId = q.transactionId;
     if (q.senderInvoiceNo) filter.senderInvoiceNo = q.senderInvoiceNo;

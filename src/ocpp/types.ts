@@ -1,3 +1,5 @@
+import type { Types } from 'mongoose';
+
 /**
  * OCPP-J 1.6 RPC framing.
  *
@@ -106,7 +108,10 @@ export const CS_INITIATED_ACTIONS = [
 export type CsInitiatedAction = (typeof CS_INITIATED_ACTIONS)[number];
 
 export interface ConnectionContext {
-  chargePointId: string;
+  /** The OCPP identifier from the connect URL, which is what the station knows. */
+  cpId: string;
+  /** The charge point's `_id`, which is what every other collection stores. */
+  ref: Types.ObjectId;
   remoteAddress: string;
   securityProfile: number;
   protocol: string;

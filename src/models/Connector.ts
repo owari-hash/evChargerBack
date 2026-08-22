@@ -3,7 +3,7 @@ import { CONNECTOR_STATUSES, CHARGE_POINT_ERROR_CODES } from './enums';
 
 const connectorSchema = new Schema(
   {
-    chargePointId: { type: String, required: true, index: true },
+    chargePointId: { type: Schema.Types.ObjectId, ref: 'ChargePoint', required: true, index: true },
     // connectorId 0 refers to the charge point as a whole
     connectorId: { type: Number, required: true, min: 0 },
     status: { type: String, enum: CONNECTOR_STATUSES, default: 'Available' },

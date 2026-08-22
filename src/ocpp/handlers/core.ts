@@ -1,3 +1,4 @@
+import type { Types } from 'mongoose';
 import type { z } from 'zod';
 import { env } from '../../config/env';
 import { ocppLogger } from '../../lib/logger';
@@ -23,7 +24,7 @@ export async function onBootNotification(
   conn: ChargePointConnection,
 ) {
   const cp = await ChargePoint.findByIdAndUpdate(
-    conn.chargePointId,
+    conn.ref,
     {
       $set: {
         chargePointVendor: payload.chargePointVendor,
@@ -39,13 +40,8 @@ export async function onBootNotification(
         lastSeenAt: new Date(),
         isOnline: true,
       },
-      $setOnInsert: {
-        _id: conn.chargePointId,
-        registrationStatus: 'Accepted',
-        heartbeatInterval: env.OCPP_HEARTBEAT_INTERVAL,
-      },
     },
-    { upsert: true, new: true },
+    { new: true },
   );
 
   const status = cp?.registrationStatus ?? 'Accepted';
@@ -53,18 +49,18 @@ export async function onBootNotification(
 
   // Connector 0 always exists; it represents the charge point itself.
   await Connector.updateOne(
-    { chargePointId: conn.chargePointId, connectorId: 0 },
-    { $setOnInsert: { chargePointId: conn.chargePointId, connectorId: 0 } },
+    { chargePointId: conn.ref, connectorId: 0 },
+    { $setOnInsert: { chargePointId: conn.ref, connectorId: 0 } },
     { upsert: true },
   ).catch(() => undefined);
 
   // A reboot invalidates any transaction the charge point thought was running.
-  const closed = await closeOrphanedTransactions(conn.chargePointId, 'Reboot');
+  const closed = await closeOrphanedTransactions(conn.ref, conn.cpId, 'Reboot');
   if (closed > 0) {
-    ocppLogger.info({ cp: conn.chargePointId, closed }, 'closed orphaned transactions after boot');
+    ocppLogger.info({ cp: conn.cpId, closed }, 'closed orphaned transactions after boot');
   }
 
-  bus.emitEvent('chargepoint.boot', conn.chargePointId, { ...payload, status, interval });
+  bus.emitEvent('chargepoint.boot', conn.cpId, { ...payload, status, interval });
 
   return {
     currentTime: new Date().toISOString(),
@@ -75,10 +71,10 @@ export async function onBootNotification(
 
 export async function onHeartbeat(_payload: unknown, conn: ChargePointConnection) {
   const now = new Date();
-  await ChargePoint.findByIdAndUpdate(conn.chargePointId, {
+  await ChargePoint.findByIdAndUpdate(conn.ref, {
     $set: { lastHeartbeatAt: now, lastSeenAt: now, isOnline: true },
   }).catch(() => undefined);
-  bus.emitEvent('chargepoint.heartbeat', conn.chargePointId, { at: now });
+  bus.emitEvent('chargepoint.heartbeat', conn.cpId, { at: now });
   return { currentTime: now.toISOString() };
 }
 
@@ -86,8 +82,8 @@ export async function onAuthorize(
   payload: Req<typeof core.AuthorizeReq>,
   conn: ChargePointConnection,
 ) {
-  const idTagInfo = await authorizeIdTag(payload.idTag, { chargePointId: conn.chargePointId });
-  await touch(conn.chargePointId);
+  const idTagInfo = await authorizeIdTag(payload.idTag, { chargePointId: conn.ref });
+  await touch(conn.ref);
   return { idTagInfo: serialiseIdTagInfo(idTagInfo) };
 }
 
@@ -96,14 +92,15 @@ export async function onStartTransaction(
   conn: ChargePointConnection,
 ) {
   const { transactionId, idTagInfo } = await startTransaction({
-    chargePointId: conn.chargePointId,
+    chargePointId: conn.ref,
+    cpId: conn.cpId,
     connectorId: payload.connectorId,
     idTag: payload.idTag,
     meterStart: payload.meterStart,
     timestamp: payload.timestamp,
     reservationId: payload.reservationId,
   });
-  await touch(conn.chargePointId);
+  await touch(conn.ref);
   return { transactionId, idTagInfo: serialiseIdTagInfo(idTagInfo) };
 }
 
@@ -112,7 +109,8 @@ export async function onStopTransaction(
   conn: ChargePointConnection,
 ) {
   const { idTagInfo } = await stopTransaction({
-    chargePointId: conn.chargePointId,
+    chargePointId: conn.ref,
+    cpId: conn.cpId,
     transactionId: payload.transactionId,
     meterStop: payload.meterStop,
     timestamp: payload.timestamp,
@@ -120,7 +118,7 @@ export async function onStopTransaction(
     reason: payload.reason,
     transactionData: payload.transactionData,
   });
-  await touch(conn.chargePointId);
+  await touch(conn.ref);
   return idTagInfo ? { idTagInfo: serialiseIdTagInfo(idTagInfo) } : {};
 }
 
@@ -129,12 +127,13 @@ export async function onMeterValues(
   conn: ChargePointConnection,
 ) {
   await storeMeterValues(
-    conn.chargePointId,
+    conn.ref,
+    conn.cpId,
     payload.connectorId,
     payload.transactionId,
     payload.meterValue,
   );
-  await touch(conn.chargePointId);
+  await touch(conn.ref);
   return {};
 }
 
@@ -145,7 +144,7 @@ export async function onStatusNotification(
   const timestamp = payload.timestamp ?? new Date();
 
   await Connector.findOneAndUpdate(
-    { chargePointId: conn.chargePointId, connectorId: payload.connectorId },
+    { chargePointId: conn.ref, connectorId: payload.connectorId },
     {
       $set: {
         status: payload.status,
@@ -155,17 +154,17 @@ export async function onStatusNotification(
         vendorErrorCode: payload.vendorErrorCode,
         statusTimestamp: timestamp,
       },
-      $setOnInsert: { chargePointId: conn.chargePointId, connectorId: payload.connectorId },
+      $setOnInsert: { chargePointId: conn.ref, connectorId: payload.connectorId },
     },
     { upsert: true, new: true },
   );
 
   if (payload.connectorId > 0) {
     const count = await Connector.countDocuments({
-      chargePointId: conn.chargePointId,
+      chargePointId: conn.ref,
       connectorId: { $gt: 0 },
     });
-    await ChargePoint.findByIdAndUpdate(conn.chargePointId, {
+    await ChargePoint.findByIdAndUpdate(conn.ref, {
       $set: { numberOfConnectors: count, lastSeenAt: new Date() },
     }).catch(() => undefined);
   }
@@ -174,7 +173,7 @@ export async function onStatusNotification(
   if (payload.status !== 'Reserved') {
     await Reservation.updateMany(
       {
-        chargePointId: conn.chargePointId,
+        chargePointId: conn.ref,
         connectorId: payload.connectorId,
         state: 'Active',
         expiryDate: { $lte: new Date() },
@@ -183,7 +182,7 @@ export async function onStatusNotification(
     ).catch(() => undefined);
   }
 
-  bus.emitEvent('connector.status', conn.chargePointId, {
+  bus.emitEvent('connector.status', conn.cpId, {
     connectorId: payload.connectorId,
     status: payload.status,
     errorCode: payload.errorCode,
@@ -199,18 +198,18 @@ export async function onDataTransfer(
   conn: ChargePointConnection,
 ) {
   ocppLogger.info(
-    { cp: conn.chargePointId, vendorId: payload.vendorId, messageId: payload.messageId },
+    { cp: conn.cpId, vendorId: payload.vendorId, messageId: payload.messageId },
     'DataTransfer received',
   );
-  await touch(conn.chargePointId);
+  await touch(conn.ref);
   // No vendor extensions are implemented; report the vendor as unknown per §4.3.
   return { status: 'UnknownVendorId' as const };
 }
 
 // ---------------------------------------------------------------------------
 
-async function touch(chargePointId: string): Promise<void> {
-  await ChargePoint.findByIdAndUpdate(chargePointId, {
+async function touch(ref: Types.ObjectId): Promise<void> {
+  await ChargePoint.findByIdAndUpdate(ref, {
     $set: { lastSeenAt: new Date(), isOnline: true },
   }).catch(() => undefined);
 }

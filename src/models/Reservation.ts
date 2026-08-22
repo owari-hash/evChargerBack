@@ -4,7 +4,7 @@ import { RESERVATION_STATES } from './enums';
 const reservationSchema = new Schema(
   {
     _id: { type: Number, required: true }, // OCPP reservationId
-    chargePointId: { type: String, required: true, index: true },
+    chargePointId: { type: Schema.Types.ObjectId, ref: 'ChargePoint', required: true, index: true },
     connectorId: { type: Number, required: true },
     idTag: { type: String, required: true },
     parentIdTag: { type: String },

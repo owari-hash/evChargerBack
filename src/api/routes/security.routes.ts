@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { readFileSync, existsSync } from 'node:fs';
 import { z } from 'zod';
 import { env } from '../../config/env';
+import { requireChargePoint, requireChargePointRef } from '../../lib/chargePointRef';
 import { notFound, badRequest } from '../../lib/errors';
 import { Certificate, CsrRequest, SecurityEvent } from '../../models/Security';
 import { CERTIFICATE_TYPES } from '../../models/enums';
@@ -39,7 +40,7 @@ securityRouter.get(
   asyncHandler(async (req, res) => {
     const q = req.query as unknown as z.infer<typeof eventQuery>;
     const filter: Record<string, unknown> = {};
-    if (q.chargePointId) filter.chargePointId = q.chargePointId;
+    if (q.chargePointId) filter.chargePointId = await requireChargePointRef(q.chargePointId);
     if (q.type) filter.type = q.type;
     if (q.critical) filter.isCritical = q.critical === 'true';
     if (q.acknowledged) filter.acknowledged = q.acknowledged === 'true';
@@ -100,7 +101,7 @@ securityRouter.get(
   asyncHandler(async (req, res) => {
     const q = req.query as unknown as z.infer<typeof certQuery>;
     const filter: Record<string, unknown> = { deletedAt: null };
-    if (q.chargePointId) filter.chargePointId = q.chargePointId;
+    if (q.chargePointId) filter.chargePointId = await requireChargePointRef(q.chargePointId);
     if (q.type) filter.type = q.type;
 
     const { skip, limit } = paginate(q);
@@ -175,7 +176,7 @@ securityRouter.get(
   asyncHandler(async (req, res) => {
     const q = req.query as unknown as z.infer<typeof csrQuery>;
     const filter: Record<string, unknown> = {};
-    if (q.chargePointId) filter.chargePointId = q.chargePointId;
+    if (q.chargePointId) filter.chargePointId = await requireChargePointRef(q.chargePointId);
     if (q.status) filter.status = q.status;
 
     const { skip, limit } = paginate(q);
@@ -195,7 +196,9 @@ securityRouter.post(
     const record = await CsrRequest.findById(req.params.id);
     if (!record) throw notFound('CSR not found');
 
-    const signed = signCsr(record.csrPem, record.chargePointId);
+    // The certificate's common name is the identity the station presents.
+    const cp = await requireChargePoint(String(record.chargePointId));
+    const signed = signCsr(record.csrPem, cp.cpId);
     record.certificatePem = signed.certificatePem;
     record.subject = signed.subject;
     record.status = 'Signed';
@@ -213,10 +216,10 @@ securityRouter.post(
     });
 
     let delivery: unknown = null;
-    if (connectionManager.isOnline(record.chargePointId)) {
+    if (connectionManager.isOnline(cp.cpId)) {
       delivery = await connectionManager
         .send(
-          record.chargePointId,
+          cp.cpId,
           'CertificateSigned',
           { certificateChain: signed.chainPem },
           req.user?.email,

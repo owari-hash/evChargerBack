@@ -1,5 +1,6 @@
 import type { IncomingMessage, Server as HttpServer } from 'node:http';
 import type { Duplex } from 'node:stream';
+import type { Types } from 'mongoose';
 import type { TLSSocket } from 'node:tls';
 import bcrypt from 'bcryptjs';
 import { WebSocketServer, type WebSocket } from 'ws';
@@ -52,8 +53,8 @@ function parseBasicAuth(header: string | undefined): { user: string; pass: strin
  * Profile 3:   TLS client certificate; the certificate CN must equal the
  *              charge point identity (A00.FR.405 / 412).
  */
-async function authenticate(req: IncomingMessage, chargePointId: string): Promise<AuthResult> {
-  const cp = await ChargePoint.findById(chargePointId).select('+authorizationKeyHash').lean();
+async function authenticate(req: IncomingMessage, cpId: string): Promise<AuthResult> {
+  const cp = await ChargePoint.findOne({ cpId }).select('+authorizationKeyHash').lean();
 
   if (env.OCPP_REQUIRE_KNOWN_CHARGEPOINT && !cp) {
     return { ok: false, status: 404, message: 'Unknown charge point' };
@@ -74,7 +75,7 @@ async function authenticate(req: IncomingMessage, chargePointId: string): Promis
     }
     const cert = socket.getPeerCertificate();
     const cn = cert?.subject?.CN;
-    if (!cn || cn !== chargePointId) {
+    if (!cn || cn !== cpId) {
       return {
         ok: false,
         status: 403,
@@ -91,7 +92,7 @@ async function authenticate(req: IncomingMessage, chargePointId: string): Promis
     if (env.OCPP_ALLOW_ANONYMOUS && !cp?.authorizationKeyHash) return { ok: true };
     return { ok: false, status: 401, message: 'Authorization required' };
   }
-  if (basic.user !== chargePointId) {
+  if (basic.user !== cpId) {
     return {
       ok: false,
       status: 401,
@@ -188,15 +189,49 @@ export function attachOcppServer(server: HttpServer): WebSocketServer {
 async function onConnection(
   ws: WebSocket,
   req: IncomingMessage,
-  chargePointId: string,
+  cpId: string,
 ): Promise<void> {
   const remoteAddress =
     (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim() ??
     req.socket.remoteAddress ??
     'unknown';
 
+  // Everything written from this connection references the charge point by its
+  // `_id`, so the row is resolved — or created, when anonymous stations are
+  // allowed to self-register — before the socket starts handling messages.
+  const cp = await ChargePoint.findOneAndUpdate(
+    { cpId },
+    {
+      $set: {
+        isOnline: true,
+        lastSeenAt: new Date(),
+        remoteAddress,
+        ocppProtocol: ws.protocol || SUBPROTOCOL,
+        disconnectedAt: null,
+      },
+      $setOnInsert: {
+        cpId,
+        registrationStatus: 'Accepted',
+        securityProfile: env.OCPP_SECURITY_PROFILE,
+        heartbeatInterval: env.OCPP_HEARTBEAT_INTERVAL,
+      },
+    },
+    { upsert: true, new: true },
+  ).catch((err) => {
+    ocppLogger.error({ err, cp: cpId }, 'failed to mark charge point online');
+    return null;
+  });
+
+  if (!cp) {
+    // Without a row there is no reference to record anything against, so the
+    // station is turned away rather than silently dropping its messages.
+    ws.close(1011, 'Charge point could not be registered');
+    return;
+  }
+
   const context: ConnectionContext = {
-    chargePointId,
+    cpId,
+    ref: cp._id,
     remoteAddress,
     securityProfile: env.OCPP_SECURITY_PROFILE,
     protocol: ws.protocol || SUBPROTOCOL,
@@ -206,45 +241,25 @@ async function onConnection(
   const conn = new ChargePointConnection(ws, context, handleInboundCall);
   connectionManager.add(conn);
 
-  ocppLogger.info({ cp: chargePointId, remoteAddress }, 'charge point connected');
+  ocppLogger.info({ cp: cpId, remoteAddress }, 'charge point connected');
 
-  await ChargePoint.findByIdAndUpdate(
-    chargePointId,
-    {
-      $set: {
-        isOnline: true,
-        lastSeenAt: new Date(),
-        remoteAddress,
-        ocppProtocol: context.protocol,
-        disconnectedAt: null,
-      },
-      $setOnInsert: {
-        _id: chargePointId,
-        registrationStatus: 'Accepted',
-        securityProfile: env.OCPP_SECURITY_PROFILE,
-        heartbeatInterval: env.OCPP_HEARTBEAT_INTERVAL,
-      },
-    },
-    { upsert: true, new: true },
-  ).catch((err) => ocppLogger.error({ err, cp: chargePointId }, 'failed to mark charge point online'));
-
-  bus.emitEvent('chargepoint.connected', chargePointId, { remoteAddress });
+  bus.emitEvent('chargepoint.connected', cpId, { remoteAddress });
 
   ws.on('close', (code, reason) => {
-    connectionManager.remove(chargePointId, conn);
-    ocppLogger.info({ cp: chargePointId, code }, 'charge point disconnected');
-    void ChargePoint.findByIdAndUpdate(chargePointId, {
+    connectionManager.remove(cpId, conn);
+    ocppLogger.info({ cp: cpId, code }, 'charge point disconnected');
+    void ChargePoint.findByIdAndUpdate(cp._id, {
       $set: { isOnline: false, disconnectedAt: new Date(), lastSeenAt: new Date() },
     }).catch(() => undefined);
-    void markConnectorsUnknown(chargePointId);
-    bus.emitEvent('chargepoint.disconnected', chargePointId, {
+    void markConnectorsUnknown(cp._id);
+    bus.emitEvent('chargepoint.disconnected', cpId, {
       code,
       reason: reason.toString(),
     });
   });
 }
 
-async function markConnectorsUnknown(chargePointId: string): Promise<void> {
+async function markConnectorsUnknown(chargePointId: Types.ObjectId): Promise<void> {
   const { Connector } = await import('../models/Connector');
   await Connector.updateMany(
     { chargePointId, status: { $ne: 'Unavailable' } },

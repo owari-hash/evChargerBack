@@ -1,4 +1,6 @@
+import type { Types } from 'mongoose';
 import { env } from '../config/env';
+import { cpIdFor } from '../lib/chargePointRef';
 import { badRequest, conflict, notFound, serviceUnavailable } from '../lib/errors';
 import { logger } from '../lib/logger';
 import { IdTag } from '../models/IdTag';
@@ -143,7 +145,7 @@ export interface LedgerRef {
   idempotencyKey?: string;
   paymentId?: string;
   transactionId?: number;
-  chargePointId?: string;
+  chargePointId?: Types.ObjectId;
   connectorId?: number;
   idTag?: string;
   createdBy?: string;
@@ -225,7 +227,7 @@ export async function credit(
     };
   }
 
-  bus.emitEvent('wallet.credited', ref.chargePointId, {
+  bus.emitEvent('wallet.credited', await cpIdFor(ref.chargePointId), {
     walletId: String(wallet._id),
     ownerType: owner.ownerType,
     ownerId: owner.ownerId,
@@ -339,7 +341,7 @@ export async function debit(
     };
   }
 
-  bus.emitEvent('wallet.debited', ref.chargePointId, {
+  bus.emitEvent('wallet.debited', await cpIdFor(ref.chargePointId), {
     walletId: String(wallet._id),
     ownerType: owner.ownerType,
     ownerId: owner.ownerId,
@@ -399,7 +401,7 @@ export async function chargeSessionToWallet(input: {
   transactionId: number;
   idTag: string;
   amount: number;
-  chargePointId?: string;
+  chargePointId?: Types.ObjectId;
   connectorId?: number;
   energyWh?: number;
 }): Promise<WalletMovement | null> {

@@ -2,7 +2,7 @@ import { Schema, model, type InferSchemaType, type HydratedDocument } from 'mong
 
 const chargingProfileSchema = new Schema(
   {
-    chargePointId: { type: String, required: true, index: true },
+    chargePointId: { type: Schema.Types.ObjectId, ref: 'ChargePoint', required: true, index: true },
     connectorId: { type: Number, required: true },
     chargingProfileId: { type: Number, required: true },
     transactionId: { type: Number },

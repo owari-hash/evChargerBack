@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { Types } from 'mongoose';
 import type { WebSocket } from 'ws';
 import { env } from '../config/env';
 import { ocppLogger } from '../lib/logger';
@@ -44,7 +45,10 @@ interface QueuedCall {
  * serialised through a queue.
  */
 export class ChargePointConnection {
-  readonly chargePointId: string;
+  /** OCPP identifier — for logs, events and the connection registry. */
+  readonly cpId: string;
+  /** Charge point `_id` — for anything written to the database. */
+  readonly ref: Types.ObjectId;
   readonly context: ConnectionContext;
 
   private readonly socket: WebSocket;
@@ -59,12 +63,13 @@ export class ChargePointConnection {
   constructor(socket: WebSocket, context: ConnectionContext, handler: InboundHandler) {
     this.socket = socket;
     this.context = context;
-    this.chargePointId = context.chargePointId;
+    this.cpId = context.cpId;
+    this.ref = context.ref;
     this.handler = handler;
 
     socket.on('message', (raw) => void this.onMessage(raw.toString()));
     socket.on('close', (code, reason) => this.onClose(code, reason.toString()));
-    socket.on('error', (err) => ocppLogger.warn({ err, cp: this.chargePointId }, 'socket error'));
+    socket.on('error', (err) => ocppLogger.warn({ err, cp: this.cpId }, 'socket error'));
     socket.on('pong', () => {
       this.isAlive = true;
     });
@@ -86,7 +91,7 @@ export class ChargePointConnection {
    */
   async call<T = unknown>(action: OcppAction | string, payload: unknown, issuedBy?: string): Promise<T> {
     if (!this.isOpen) {
-      throw new Error(`Charge point ${this.chargePointId} is not connected`);
+      throw new Error(`Charge point ${this.cpId} is not connected`);
     }
     const def = getMessageDefinition(action);
     if (!def) throw new Error(`Unknown OCPP action: ${action}`);
@@ -127,7 +132,7 @@ export class ChargePointConnection {
     let commandLogId: string | undefined;
     try {
       const cmd = await CommandLog.create({
-        chargePointId: this.chargePointId,
+        chargePointId: this.ref,
         action: next.action,
         uniqueId,
         request: next.payload ?? {},
@@ -181,7 +186,7 @@ export class ChargePointConnection {
     try {
       frame = JSON.parse(raw);
     } catch {
-      ocppLogger.warn({ cp: this.chargePointId, raw: raw.slice(0, 200) }, 'invalid JSON received');
+      ocppLogger.warn({ cp: this.cpId, raw: raw.slice(0, 200) }, 'invalid JSON received');
       this.sendCallError('-1', RpcErrorCode.ProtocolError, 'Message is not valid JSON');
       return;
     }
@@ -219,7 +224,7 @@ export class ChargePointConnection {
 
   private async handleCall(uniqueId: string, action: string, payload: unknown): Promise<void> {
     void this.logFrame('IN', MessageType.CALL, uniqueId, action, payload);
-    bus.emitEvent('ocpp.message', this.chargePointId, {
+    bus.emitEvent('ocpp.message', this.cpId, {
       direction: 'IN',
       action,
       uniqueId,
@@ -243,7 +248,7 @@ export class ChargePointConnection {
     const parsed = def.req.safeParse(payload ?? {});
     if (!parsed.success) {
       ocppLogger.warn(
-        { cp: this.chargePointId, action, issues: parsed.error.issues },
+        { cp: this.cpId, action, issues: parsed.error.issues },
         'inbound payload failed validation',
       );
       this.sendCallError(
@@ -260,7 +265,7 @@ export class ChargePointConnection {
       const confParsed = def.conf.safeParse(result ?? {});
       if (!confParsed.success) {
         ocppLogger.error(
-          { cp: this.chargePointId, action, issues: confParsed.error.issues },
+          { cp: this.cpId, action, issues: confParsed.error.issues },
           'handler produced an invalid response',
         );
         this.sendCallError(uniqueId, RpcErrorCode.InternalError, 'Invalid response generated');
@@ -271,7 +276,7 @@ export class ChargePointConnection {
       if (err instanceof OcppRpcError) {
         this.sendCallError(uniqueId, err.code, err.message, err.details);
       } else {
-        ocppLogger.error({ err, cp: this.chargePointId, action }, 'handler threw');
+        ocppLogger.error({ err, cp: this.cpId, action }, 'handler threw');
         this.sendCallError(uniqueId, RpcErrorCode.InternalError, 'Internal error');
       }
     }
@@ -281,7 +286,7 @@ export class ChargePointConnection {
     const p = this.pending.get(uniqueId);
     void this.logFrame('IN', MessageType.CALLRESULT, uniqueId, p?.action, payload);
     if (!p) {
-      ocppLogger.warn({ cp: this.chargePointId, uniqueId }, 'CALLRESULT for unknown uniqueId');
+      ocppLogger.warn({ cp: this.cpId, uniqueId }, 'CALLRESULT for unknown uniqueId');
       return;
     }
     clearTimeout(p.timer);
@@ -292,13 +297,13 @@ export class ChargePointConnection {
 
     if (parsed && !parsed.success) {
       ocppLogger.warn(
-        { cp: this.chargePointId, action: p.action, issues: parsed.error.issues },
+        { cp: this.cpId, action: p.action, issues: parsed.error.issues },
         'CALLRESULT failed validation; passing raw payload through',
       );
     }
 
     void this.finishCommandLog(p.commandLogId, 'Success', value, undefined, p.startedAt);
-    bus.emitEvent('command.result', this.chargePointId, {
+    bus.emitEvent('command.result', this.cpId, {
       action: p.action,
       uniqueId,
       status: 'Success',
@@ -316,7 +321,7 @@ export class ChargePointConnection {
     const p = this.pending.get(uniqueId);
     void this.logFrame('IN', MessageType.CALLERROR, uniqueId, p?.action, details, code, description);
     if (!p) {
-      ocppLogger.warn({ cp: this.chargePointId, uniqueId, code }, 'CALLERROR for unknown uniqueId');
+      ocppLogger.warn({ cp: this.cpId, uniqueId, code }, 'CALLERROR for unknown uniqueId');
       return;
     }
     clearTimeout(p.timer);
@@ -327,7 +332,7 @@ export class ChargePointConnection {
       `${code}: ${description}`,
       p.startedAt,
     );
-    bus.emitEvent('command.result', this.chargePointId, {
+    bus.emitEvent('command.result', this.cpId, {
       action: p.action,
       uniqueId,
       status: 'Failed',
@@ -365,7 +370,7 @@ export class ChargePointConnection {
     if (env.OCPP_PING_INTERVAL_MS <= 0) return;
     this.pingTimer = setInterval(() => {
       if (!this.isAlive) {
-        ocppLogger.warn({ cp: this.chargePointId }, 'no pong received, terminating connection');
+        ocppLogger.warn({ cp: this.cpId }, 'no pong received, terminating connection');
         this.socket.terminate();
         return;
       }
@@ -413,7 +418,7 @@ export class ChargePointConnection {
     if (!env.OCPP_LOG_MESSAGES) return;
     try {
       await OcppMessageLog.create({
-        chargePointId: this.chargePointId,
+        chargePointId: this.ref,
         direction,
         messageTypeId,
         uniqueId,

@@ -14,8 +14,18 @@ export async function connectDatabase(): Promise<typeof mongoose> {
     maxPoolSize: 20,
   });
 
-  // Build indexes declared on the models. Safe to run on every boot.
-  await Promise.all(mongoose.modelNames().map((n) => mongoose.model(n).createIndexes()));
+  // Build indexes declared on the models. Safe to run on every boot, and a
+  // failure is reported rather than thrown: an index that cannot be built yet —
+  // a unique one over data that has not been migrated, say — is a problem to fix
+  // deliberately, not a reason to refuse to serve charge points.
+  await Promise.all(
+    mongoose.modelNames().map((name) =>
+      mongoose
+        .model(name)
+        .createIndexes()
+        .catch((err: unknown) => logger.error({ err, model: name }, 'index build failed')),
+    ),
+  );
 
   return mongoose;
 }

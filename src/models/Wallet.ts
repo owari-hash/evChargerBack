@@ -95,7 +95,7 @@ const walletEntrySchema = new Schema(
     /** What the entry refers to; all optional, set for the kinds that have one. */
     paymentId: { type: String, index: true, sparse: true },
     transactionId: { type: Number, index: true, sparse: true },
-    chargePointId: { type: String },
+    chargePointId: { type: Schema.Types.ObjectId, ref: 'ChargePoint' },
     connectorId: { type: Number },
     idTag: { type: String },
     /** Who performed a manual adjustment (user id or 'system'). */

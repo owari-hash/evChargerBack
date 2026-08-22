@@ -1,3 +1,4 @@
+import type { Types } from 'mongoose';
 import { env } from '../config/env';
 import { logger } from '../lib/logger';
 import { ChargePoint } from '../models/ChargePoint';
@@ -15,16 +16,18 @@ let timers: NodeJS.Timeout[] = [];
  * heartbeat is a more reliable liveness signal than the TCP state alone.
  */
 async function sweepOfflineChargePoints(): Promise<void> {
-  const online = new Set(connectionManager.onlineIds());
+  // The registry knows stations by their OCPP identifier; the rows are matched
+  // and updated by reference.
+  const online = new Set(connectionManager.onlineCpIds());
   const candidates = await ChargePoint.find({ isOnline: true })
-    .select('_id heartbeatInterval lastSeenAt')
+    .select('_id cpId heartbeatInterval lastSeenAt')
     .lean();
 
   const now = Date.now();
-  const stale: string[] = [];
+  const stale: Types.ObjectId[] = [];
 
   for (const cp of candidates) {
-    if (online.has(cp._id)) continue;
+    if (online.has(cp.cpId)) continue;
     const grace = (cp.heartbeatInterval || env.OCPP_HEARTBEAT_INTERVAL) * 2 * 1000;
     const last = cp.lastSeenAt?.getTime() ?? 0;
     if (now - last > grace) stale.push(cp._id);

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { requireChargePoint, requireChargePointRef } from '../../lib/chargePointRef';
 import { notFound } from '../../lib/errors';
 import { MeterValue } from '../../models/MeterValue';
 import { Transaction } from '../../models/Transaction';
@@ -33,7 +34,7 @@ transactionsRouter.get(
   asyncHandler(async (req, res) => {
     const q = req.query as unknown as z.infer<typeof listQuery>;
     const filter: Record<string, unknown> = {};
-    if (q.chargePointId) filter.chargePointId = q.chargePointId;
+    if (q.chargePointId) filter.chargePointId = await requireChargePointRef(q.chargePointId);
     if (q.connectorId !== undefined) filter.connectorId = q.connectorId;
     if (q.idTag) filter.idTag = q.idTag;
     if (q.status) filter.status = q.status;
@@ -106,8 +107,9 @@ transactionsRouter.post(
       res.json({ status: 'AlreadyStopped', transaction: tx.toJSON() });
       return;
     }
+    const cp = await requireChargePoint(String(tx.chargePointId));
     const result = await connectionManager.send<{ status: string }>(
-      tx.chargePointId,
+      cp.cpId,
       'RemoteStopTransaction',
       { transactionId: tx._id },
       req.user?.email,
@@ -139,8 +141,10 @@ transactionsRouter.post(
     const tx = await Transaction.findById(Number(req.params.id));
     if (!tx) throw notFound('Transaction not found');
 
+    const cp = await requireChargePoint(String(tx.chargePointId));
     await stopTransaction({
       chargePointId: tx.chargePointId,
+      cpId: cp.cpId,
       transactionId: tx._id,
       meterStop: body.meterStop ?? tx.lastMeterWh ?? tx.meterStart,
       timestamp: new Date(),

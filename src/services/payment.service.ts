@@ -1,4 +1,6 @@
+import type { Types } from 'mongoose';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { cpIdFor } from '../lib/chargePointRef';
 import {
   env,
   qpayCallbackUrl,
@@ -97,7 +99,7 @@ export interface CreatePaymentInput {
   receiverCode?: string;
   receiver?: { register?: string; name?: string; email?: string; phone?: string };
   transactionId?: number;
-  chargePointId?: string;
+  chargePointId?: Types.ObjectId;
   connectorId?: number;
   idTag?: string;
   userId?: string;
@@ -173,7 +175,10 @@ export async function createPayment(input: CreatePaymentInput): Promise<PaymentD
       }
       amount = derived;
     }
-    description ??= `Charging session ${tx._id} at ${tx.chargePointId} (${((tx.energyWh ?? 0) / 1000).toFixed(
+    // The invoice is read by a person, so it names the station rather than
+            // referencing it.
+    const cpId = (await cpIdFor(tx.chargePointId)) ?? 'unknown station';
+    description ??= `Charging session ${tx._id} at ${cpId} (${((tx.energyWh ?? 0) / 1000).toFixed(
       2,
     )} kWh)`;
     meta.chargePointId = input.chargePointId ?? tx.chargePointId;
@@ -286,7 +291,7 @@ export async function createPayment(input: CreatePaymentInput): Promise<PaymentD
   payment.lastError = undefined;
   await payment.save();
 
-  bus.emitEvent('payment.created', payment.chargePointId ?? undefined, {
+  bus.emitEvent('payment.created', await cpIdFor(payment.chargePointId), {
     paymentId: String(payment._id),
     senderInvoiceNo,
     invoiceId: payment.invoiceId,
@@ -484,7 +489,7 @@ export async function syncPayment(payment: PaymentDoc): Promise<PaymentDoc> {
     }
 
     await applyWalletTopUp(payment);
-    bus.emitEvent('payment.paid', payment.chargePointId ?? undefined, {
+    bus.emitEvent('payment.paid', await cpIdFor(payment.chargePointId), {
       paymentId: String(payment._id),
       senderInvoiceNo: payment.senderInvoiceNo,
       invoiceId: payment.invoiceId,
@@ -554,7 +559,7 @@ export async function cancelPayment(payment: PaymentDoc): Promise<PaymentDoc> {
   payment.canceledAt = new Date();
   await payment.save();
 
-  bus.emitEvent('payment.canceled', payment.chargePointId ?? undefined, {
+  bus.emitEvent('payment.canceled', await cpIdFor(payment.chargePointId), {
     paymentId: String(payment._id),
     senderInvoiceNo: payment.senderInvoiceNo,
   });

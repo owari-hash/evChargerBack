@@ -16,7 +16,7 @@ const sampledValueSchema = new Schema(
 
 const meterValueSchema = new Schema(
   {
-    chargePointId: { type: String, required: true, index: true },
+    chargePointId: { type: Schema.Types.ObjectId, ref: 'ChargePoint', required: true, index: true },
     connectorId: { type: Number, required: true },
     transactionId: { type: Number, default: null, index: true },
     timestamp: { type: Date, required: true },

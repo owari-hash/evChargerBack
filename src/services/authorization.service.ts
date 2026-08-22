@@ -1,3 +1,4 @@
+import type { Types } from 'mongoose';
 import { env } from '../config/env';
 import { logger } from '../lib/logger';
 import { IdTag } from '../models/IdTag';
@@ -10,7 +11,7 @@ export interface AuthorizeOptions {
   /** Ignore the concurrent-transaction limit (used when stopping a transaction). */
   skipConcurrencyCheck?: boolean;
   /** Charge point the tag is being presented at, for the allow-list check. */
-  chargePointId?: string;
+  chargePointId?: Types.ObjectId;
   /** Skip the prepaid balance pre-check (remote stop, operator override). */
   skipBalanceCheck?: boolean;
 }
@@ -52,7 +53,7 @@ export async function authorizeIdTag(
     opts.chargePointId &&
     Array.isArray(tag.allowedChargePointIds) &&
     tag.allowedChargePointIds.length > 0 &&
-    !tag.allowedChargePointIds.includes(opts.chargePointId)
+    !tag.allowedChargePointIds.some((id) => id.equals(opts.chargePointId!))
   ) {
     return { ...base, status: 'Blocked' };
   }

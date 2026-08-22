@@ -9,7 +9,7 @@ const statusEntrySchema = new Schema(
 /** UpdateFirmware / SignedUpdateFirmware jobs and their reported status stream. */
 const firmwareJobSchema = new Schema(
   {
-    chargePointId: { type: String, required: true, index: true },
+    chargePointId: { type: Schema.Types.ObjectId, ref: 'ChargePoint', required: true, index: true },
     kind: { type: String, enum: JOB_KINDS, required: true },
     requestId: { type: Number, index: true },
     location: { type: String, required: true },
@@ -43,7 +43,7 @@ export const FirmwareJob = model('FirmwareJob', firmwareJobSchema);
 /** GetDiagnostics / GetLog jobs. */
 const diagnosticsJobSchema = new Schema(
   {
-    chargePointId: { type: String, required: true, index: true },
+    chargePointId: { type: Schema.Types.ObjectId, ref: 'ChargePoint', required: true, index: true },
     kind: { type: String, enum: JOB_KINDS, required: true },
     requestId: { type: Number, index: true },
     location: { type: String, required: true },

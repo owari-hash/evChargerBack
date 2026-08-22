@@ -10,6 +10,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/src/index.js",
     "seed": "tsx scripts/seed.ts",
+    "migrate:cp-ids": "tsx scripts/migrate-charge-point-ids.ts",
     "simulator": "tsx scripts/simulator.ts",
     "typecheck": "tsc --noEmit",
     "qpay:check": "tsx scripts/qpay-check.ts"
