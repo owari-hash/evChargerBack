@@ -49,6 +49,16 @@ authRouter.get(
   }),
 );
 
+authRouter.delete(
+  '/me',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const user = await User.findByIdAndUpdate(req.user!.id, { isActive: false }, { new: true });
+    if (!user) throw notFound('User not found');
+    res.status(200).json({ ok: true, message: 'Account deactivated' });
+  }),
+);
+
 const createUserSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
