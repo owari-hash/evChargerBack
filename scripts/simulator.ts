@@ -31,7 +31,7 @@ function parseArgs(): Args {
     key: get('key'),
     idTag: get('idTag', 'TAG-0001')!,
     connector: Number(get('connector', '1')),
-    seconds: Number(get('seconds', '60')),
+    seconds: Number(get('seconds', '3600')),
   };
 }
 

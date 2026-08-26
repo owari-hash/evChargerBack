@@ -7,6 +7,7 @@ import { Transaction } from '../../models/Transaction';
 import { TRANSACTION_STATUSES } from '../../models/enums';
 import { connectionManager } from '../../ocpp/manager';
 import { stopTransaction } from '../../services/transaction.service';
+import { issueEBarimtForTransaction } from '../../services/ebarimt.service';
 import {
   asyncHandler,
   paginate,
@@ -152,5 +153,21 @@ transactionsRouter.post(
     });
 
     res.json((await Transaction.findById(tx._id))?.toJSON());
+  }),
+);
+
+const ebarimtSchema = z.object({
+  type: z.enum(['B2C_RECEIPT', 'B2B_RECEIPT']).optional(),
+  customerTin: z.string().optional(),
+  customerNo: z.string().optional(),
+});
+
+transactionsRouter.post(
+  '/:id/ebarimt',
+  validate(ebarimtSchema),
+  asyncHandler(async (req, res) => {
+    const body = req.body as z.infer<typeof ebarimtSchema>;
+    const tx = await issueEBarimtForTransaction(Number(req.params.id), body);
+    res.json(tx.toJSON());
   }),
 );
