@@ -100,6 +100,21 @@ const paymentSchema = new Schema(
     canceledAt: { type: Date },
     expiresAt: { type: Date, index: true },
     lastError: { type: String },
+
+    ebarimt: {
+      receiptId: { type: String },
+      type: { type: String, enum: ['B2C_RECEIPT', 'B2B_RECEIPT'] },
+      qrData: { type: String },
+      lottery: { type: String },
+      merchantTin: { type: String },
+      customerNo: { type: String },
+      customerTin: { type: String },
+      totalAmount: { type: Number },
+      totalVAT: { type: Number },
+      status: { type: String, enum: ['SUCCESS', 'FAILED', 'PENDING'] },
+      issuedAt: { type: Date },
+      error: { type: String },
+    },
   },
   {
     timestamps: true,

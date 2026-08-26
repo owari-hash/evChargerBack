@@ -28,6 +28,7 @@ import { QpayError, qpayLogger } from './qpay/http';
 import * as merchant from './qpay/merchant.client';
 import * as quickqr from './qpay/quickqr.client';
 import { credit as creditWallet, debit as debitWallet } from './wallet.service';
+import { issueEBarimtForTransaction, issueEBarimtForPayment } from './ebarimt.service';
 
 /** MNT has no subunits in practice — QPay expects whole tugrik. */
 const normaliseAmount = (amount: number): number => {
@@ -486,6 +487,20 @@ export async function syncPayment(payment: PaymentDoc): Promise<PaymentDoc> {
         { _id: payment.transactionId },
         { $set: { cost: payment.paidAmount } },
       ).catch(() => undefined);
+
+      await issueEBarimtForTransaction(payment.transactionId).catch((err: unknown) =>
+        qpayLogger.error(
+          { paymentId: String(payment._id), err: (err as Error).message },
+          'failed to issue ebarimt after QPay transaction payment',
+        ),
+      );
+    } else {
+      await issueEBarimtForPayment(payment).catch((err: unknown) =>
+        qpayLogger.error(
+          { paymentId: String(payment._id), err: (err as Error).message },
+          'failed to issue ebarimt after QPay wallet topup',
+        ),
+      );
     }
 
     await applyWalletTopUp(payment);
