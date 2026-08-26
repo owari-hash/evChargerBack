@@ -479,7 +479,18 @@ export async function syncPayment(payment: PaymentDoc): Promise<PaymentDoc> {
     payment.status = 'EXPIRED';
   }
 
-  await payment.save();
+  try {
+    await payment.save();
+  } catch (err: any) {
+    if (err.name === 'VersionError') {
+      const fresh = await Payment.findById(payment._id);
+      if (fresh) {
+        payment = fresh;
+      }
+    } else {
+      throw err;
+    }
+  }
 
   if (payment.status === 'PAID' && previousStatus !== 'PAID') {
     if (payment.transactionId !== undefined && payment.transactionId !== null) {

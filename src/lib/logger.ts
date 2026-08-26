@@ -13,3 +13,5 @@ export const logger = pino({
 
 export const ocppLogger = logger.child({ mod: 'ocpp' });
 export const apiLogger = logger.child({ mod: 'api' });
+export const ebarimtLogger = logger.child({ mod: 'ebarimt' });
+export const qpayLogger = logger.child({ mod: 'qpay' });

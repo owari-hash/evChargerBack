@@ -1,6 +1,7 @@
 import { Transaction, type TransactionDoc } from '../models/Transaction';
 import { Payment, type PaymentDoc } from '../models/Payment';
 import { EbarimtMerchant, ensureDefaultEbarimtMerchant } from '../models/EbarimtMerchant';
+import { ebarimtLogger } from '../lib/logger';
 
 export interface IssueEBarimtOptions {
   type?: 'B2C_RECEIPT' | 'B2B_RECEIPT';
@@ -114,12 +115,15 @@ export async function issueEBarimtForTransaction(
       issuedAt: new Date(),
     };
 
+    await Transaction.updateOne({ _id: transactionId }, { $set: { ebarimt: ebarimtData } });
     tx.ebarimt = ebarimtData;
-    await tx.save();
-    console.log(`[ebarimt] Issued transaction receipt ${ebarimtData.receiptId} (lottery: ${ebarimtData.lottery}) for tx #${transactionId}`);
+    ebarimtLogger.info(
+      { transactionId, receiptId: ebarimtData.receiptId, lottery: ebarimtData.lottery, amount: finalAmount },
+      '🧾 [E-BARIMT] Transaction receipt issued successfully',
+    );
     return tx;
   } catch (err: any) {
-    console.error('[ebarimt] call failed:', err?.message || err);
+    ebarimtLogger.error({ transactionId, err: err?.message || err }, '❌ [E-BARIMT] Call failed, generating fallback receipt');
     // Fallback formatted mock data when offline or testing
     const fallbackData = {
       receiptId: `MOCK-${Date.now()}`,
@@ -136,9 +140,12 @@ export async function issueEBarimtForTransaction(
       error: err?.message,
     };
 
+    await Transaction.updateOne({ _id: transactionId }, { $set: { ebarimt: fallbackData } });
     tx.ebarimt = fallbackData;
-    await tx.save();
-    console.log(`[ebarimt] Created fallback transaction receipt ${fallbackData.receiptId} (lottery: ${fallbackData.lottery}) for tx #${transactionId}`);
+    ebarimtLogger.info(
+      { transactionId, receiptId: fallbackData.receiptId, lottery: fallbackData.lottery, amount: finalAmount },
+      '🧾 [E-BARIMT] Fallback transaction receipt issued',
+    );
     return tx;
   }
 }
@@ -240,12 +247,15 @@ export async function issueEBarimtForPayment(
       issuedAt: new Date(),
     };
 
+    await Payment.updateOne({ _id: payment._id }, { $set: { ebarimt: ebarimtData } });
     payment.ebarimt = ebarimtData;
-    await payment.save();
-    console.log(`[ebarimt] Issued payment receipt ${ebarimtData.receiptId} (lottery: ${ebarimtData.lottery}) for payment ${payment._id}`);
+    ebarimtLogger.info(
+      { paymentId: String(payment._id), receiptId: ebarimtData.receiptId, lottery: ebarimtData.lottery, amount: finalAmount },
+      '🧾 [E-BARIMT] Payment receipt issued successfully',
+    );
     return payment;
   } catch (err: any) {
-    console.error('[ebarimt] payment call failed:', err?.message || err);
+    ebarimtLogger.error({ paymentId: String(payment._id), err: err?.message || err }, '❌ [E-BARIMT] Payment call failed, generating fallback receipt');
     const fallbackData = {
       receiptId: `MOCK-${Date.now()}`,
       type: receiptType,
@@ -261,9 +271,12 @@ export async function issueEBarimtForPayment(
       error: err?.message,
     };
 
+    await Payment.updateOne({ _id: payment._id }, { $set: { ebarimt: fallbackData } });
     payment.ebarimt = fallbackData;
-    await payment.save();
-    console.log(`[ebarimt] Created fallback payment receipt ${fallbackData.receiptId} (lottery: ${fallbackData.lottery}) for payment ${payment._id}`);
+    ebarimtLogger.info(
+      { paymentId: String(payment._id), receiptId: fallbackData.receiptId, lottery: fallbackData.lottery, amount: finalAmount },
+      '🧾 [E-BARIMT] Fallback payment receipt issued',
+    );
     return payment;
   }
 }
