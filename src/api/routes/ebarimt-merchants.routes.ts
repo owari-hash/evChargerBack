@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { notFound } from '../../lib/errors';
 import { EbarimtMerchant } from '../../models/EbarimtMerchant';
+import { checkEbarimtMerchant } from '../../services/ebarimt.service';
 import {
   asyncHandler,
   paginate,
@@ -59,6 +60,7 @@ const merchantSchema = z.object({
   name: z.string().min(2, 'Нэрээ оруулна уу'),
   merchantTin: z.string().min(4, 'ААН-ийн Регистрийн дугаарыг оруулна уу'),
   districtCode: z.string().default('23'),
+  khorooCode: z.string().default('1'),
   branchNo: z.string().default('001'),
   posNo: z.string().default('0001'),
   envMode: z.enum(['PRODUCTION', 'TEST']).default('PRODUCTION'),
@@ -68,6 +70,7 @@ const merchantSchema = z.object({
   ebarimtApiUrl: z.string().default('http://103.143.40.43:7080/'),
   isDefault: z.boolean().default(true),
   enabled: z.boolean().default(true),
+  autoSend: z.boolean().default(true),
 });
 
 ebarimtMerchantsRouter.post(
@@ -82,7 +85,9 @@ ebarimtMerchantsRouter.post(
     }
 
     const created = await EbarimtMerchant.create(body);
-    res.status(201).json({ ...created.toObject(), id: String(created._id) });
+    const verified = await checkEbarimtMerchant(String(created._id)).catch(() => created);
+    const obj = verified.toObject ? verified.toObject() : created.toObject();
+    res.status(201).json({ ...obj, id: String(created._id) });
   }),
 );
 
@@ -97,10 +102,22 @@ ebarimtMerchantsRouter.put(
       await EbarimtMerchant.updateMany({ _id: { $ne: req.params.id } }, { $set: { isDefault: false } });
     }
 
-    const updated = await EbarimtMerchant.findByIdAndUpdate(req.params.id, { $set: body }, { new: true }).lean();
+    const updated = await EbarimtMerchant.findByIdAndUpdate(req.params.id, { $set: body }, { new: true });
     if (!updated) throw notFound('eBarimt Merchant not found');
 
-    res.json({ ...updated, id: String(updated._id) });
+    const verified = await checkEbarimtMerchant(String(updated._id)).catch(() => updated);
+    const obj = verified.toObject ? verified.toObject() : updated.toObject();
+
+    res.json({ ...obj, id: String(updated._id) });
+  }),
+);
+
+ebarimtMerchantsRouter.post(
+  '/:id/check',
+  requireOperator,
+  asyncHandler(async (req, res) => {
+    const verified = await checkEbarimtMerchant(req.params.id);
+    res.json({ ...verified.toObject(), id: String(verified._id) });
   }),
 );
 
@@ -113,3 +130,4 @@ ebarimtMerchantsRouter.delete(
     res.json({ ok: true });
   }),
 );
+

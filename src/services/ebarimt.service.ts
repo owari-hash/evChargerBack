@@ -263,3 +263,96 @@ export async function issueEBarimtForPayment(
     return payment;
   }
 }
+
+export async function checkEbarimtMerchant(merchantId: string) {
+  const merchant = await EbarimtMerchant.findById(merchantId);
+  if (!merchant) {
+    throw new Error('eBarimt Merchant not found');
+  }
+
+  const isTest = merchant.envMode === 'TEST';
+  const rawUrl = isTest
+    ? merchant.testApiUrl || process.env.EBARIMTSHINE_TEST || 'http://103.236.194.50:7080/'
+    : merchant.prodApiUrl || merchant.ebarimtApiUrl || process.env.EBARIMTSHINE_IP || 'http://103.143.40.43:7080/';
+  const baseUrl = rawUrl.replace(/\/+$/, '');
+
+  const checkedAt = new Date();
+  const startTime = Date.now();
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+    // Try checking /rest/check or /rest/info
+    let res = await fetch(`${baseUrl}/rest/check`, {
+      method: 'GET',
+      signal: controller.signal,
+      headers: { 'Accept': 'application/json' },
+    }).catch(() => null);
+
+    if (!res || !res.ok) {
+      // Try /rest/info as secondary check
+      res = await fetch(`${baseUrl}/rest/info`, {
+        method: 'GET',
+        signal: controller.signal,
+        headers: { 'Accept': 'application/json' },
+      }).catch(() => null);
+    }
+
+    clearTimeout(timeoutId);
+    const durationMs = Date.now() - startTime;
+
+    let responseData: any = null;
+    let statusCode = res?.status || 500;
+    if (res) {
+      responseData = await res.json().catch(() => null);
+    }
+
+    const isSuccess = res ? (res.ok || (responseData && responseData.configStatus === 'SUCCESS') || res.status < 500) : false;
+
+    const checkResult = {
+      status: isSuccess ? ('SUCCESS' as const) : ('ERROR' as const),
+      statusCode,
+      message: isSuccess
+        ? `eBarimt REST Сервис хүлээн авсан (${durationMs}ms) - Merchant TIN: ${merchant.merchantTin}`
+        : `eBarimt Серверт холбогдоход алдаа гарлаа (${statusCode})`,
+      checkedAt,
+      rawResponse: responseData || {
+        testedUrl: baseUrl,
+        durationMs,
+        httpStatus: statusCode,
+        merchantTin: merchant.merchantTin,
+        districtCode: merchant.districtCode,
+        khorooCode: merchant.khorooCode,
+        autoSend: merchant.autoSend,
+        acceptedByService: isSuccess,
+      },
+    };
+
+    merchant.lastCheckResult = checkResult;
+    await merchant.save();
+    return merchant;
+  } catch (err: any) {
+    const durationMs = Date.now() - startTime;
+    const checkResult = {
+      status: 'ERROR' as const,
+      statusCode: 503,
+      message: `Серверт холбогдож чадсангүй: ${err?.message || 'Timeout / Connection Refused'}`,
+      checkedAt,
+      rawResponse: {
+        testedUrl: baseUrl,
+        durationMs,
+        error: err?.message || 'Network error',
+        merchantTin: merchant.merchantTin,
+        districtCode: merchant.districtCode,
+        khorooCode: merchant.khorooCode,
+        acceptedByService: false,
+      },
+    };
+
+    merchant.lastCheckResult = checkResult;
+    await merchant.save();
+    return merchant;
+  }
+}
+
