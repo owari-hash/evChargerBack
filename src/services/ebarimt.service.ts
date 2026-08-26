@@ -38,8 +38,6 @@ export async function issueEBarimtForTransaction(
 
   const merchantTin = activeMerchant?.merchantTin || process.env.EBARIMT_MERCHANT_TIN || '6123456';
   const districtCode = activeMerchant?.districtCode || process.env.EBARIMT_DISTRICT_CODE || '23';
-  const branchNo = activeMerchant?.branchNo || process.env.EBARIMT_BRANCH_NO || '001';
-  const posNo = activeMerchant?.posNo || process.env.EBARIMT_POS_NO || '0001';
   const isTest = activeMerchant?.envMode === 'TEST';
   const rawUrl = isTest
     ? activeMerchant?.testApiUrl || process.env.EBARIMTSHINE_TEST || 'http://103.236.194.50:7080/'
@@ -52,8 +50,8 @@ export async function issueEBarimtForTransaction(
     customerNo: options.customerNo || (isB2B ? options.customerTin : tx.idTag),
     customerTin: isB2B ? options.customerTin : undefined,
     districtCode,
-    branchNo,
-    posNo,
+    branchNo: '001',
+    posNo: '0001',
     totalAmount: finalAmount.toFixed(2),
     totalVAT: totalVAT.toFixed(2),
     totalCityTax: '0.00',
@@ -164,8 +162,6 @@ export async function issueEBarimtForPayment(
 
   const merchantTin = activeMerchant?.merchantTin || process.env.EBARIMT_MERCHANT_TIN || '6123456';
   const districtCode = activeMerchant?.districtCode || process.env.EBARIMT_DISTRICT_CODE || '23';
-  const branchNo = activeMerchant?.branchNo || process.env.EBARIMT_BRANCH_NO || '001';
-  const posNo = activeMerchant?.posNo || process.env.EBARIMT_POS_NO || '0001';
   const isTest = activeMerchant?.envMode === 'TEST';
   const rawUrl = isTest
     ? activeMerchant?.testApiUrl || process.env.EBARIMTSHINE_TEST || 'http://103.236.194.50:7080/'
@@ -178,8 +174,8 @@ export async function issueEBarimtForPayment(
     customerNo: options.customerNo || (isB2B ? options.customerTin : payment.walletOwnerId || payment.idTag || 'CUSTOMER'),
     customerTin: isB2B ? options.customerTin : undefined,
     districtCode,
-    branchNo,
-    posNo,
+    branchNo: '001',
+    posNo: '0001',
     totalAmount: finalAmount.toFixed(2),
     totalVAT: totalVAT.toFixed(2),
     totalCityTax: '0.00',

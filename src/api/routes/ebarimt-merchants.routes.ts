@@ -62,8 +62,6 @@ const merchantSchema = z.object({
   merchantTin: z.string().min(4, 'ААН-ийн Регистрийн дугаарыг оруулна уу'),
   districtCode: z.string().default('23'),
   khorooCode: z.string().default('1'),
-  branchNo: z.string().default('001'),
-  posNo: z.string().default('0001'),
   envMode: z.enum(['PRODUCTION', 'TEST']).default('PRODUCTION'),
   prodApiUrl: z.string().default('http://103.143.40.43:7080/'),
   testApiUrl: z.string().default('http://103.236.194.50:7080/'),

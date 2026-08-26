@@ -4,6 +4,8 @@ import { cpIdFor } from '../lib/chargePointRef';
 import { badRequest, conflict, notFound, serviceUnavailable } from '../lib/errors';
 import { logger } from '../lib/logger';
 import { IdTag } from '../models/IdTag';
+import { Payment } from '../models/Payment';
+import { Transaction } from '../models/Transaction';
 import {
   Wallet,
   WalletEntry,
@@ -473,12 +475,34 @@ export async function listEntries(owner: WalletOwner, q: ListEntriesQuery) {
     filter.createdAt = { ...(q.from ? { $gte: q.from } : {}), ...(q.to ? { $lte: q.to } : {}) };
   }
 
-  const [data, total] = await Promise.all([
+  const [rawEntries, total] = await Promise.all([
     WalletEntry.find(filter).sort({ createdAt: -1 }).skip(q.skip).limit(q.limit).lean(),
     WalletEntry.countDocuments(filter),
   ]);
 
-  return { data: data.map(toEntryView), total };
+  const paymentIds = rawEntries.map((e) => e.paymentId).filter(Boolean);
+  const transactionIds = rawEntries.map((e) => e.transactionId).filter(Boolean);
+
+  const [payments, transactions] = await Promise.all([
+    paymentIds.length ? Payment.find({ _id: { $in: paymentIds } }, { ebarimt: 1 }).lean() : [],
+    transactionIds.length ? Transaction.find({ _id: { $in: transactionIds } }, { ebarimt: 1 }).lean() : [],
+  ]);
+
+  const paymentMap = new Map(payments.map((p) => [String(p._id), p.ebarimt]));
+  const transactionMap = new Map(transactions.map((t) => [t._id, t.ebarimt]));
+
+  const data = rawEntries.map((raw) => {
+    const doc = toEntryView(raw);
+    const eb =
+      (raw.paymentId ? paymentMap.get(String(raw.paymentId)) : undefined) ||
+      (raw.transactionId ? transactionMap.get(raw.transactionId) : undefined);
+    if (eb) {
+      doc.ebarimt = eb;
+    }
+    return doc;
+  });
+
+  return { data, total };
 }
 
 export function toWalletView(wallet: WalletDoc | Record<string, unknown>): Record<string, unknown> {

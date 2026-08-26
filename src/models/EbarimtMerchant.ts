@@ -6,8 +6,6 @@ const ebarimtMerchantSchema = new Schema(
     merchantTin: { type: String, required: true, index: true }, // ААН-ийн Регистрийн дугаар
     districtCode: { type: String, default: '23' }, // Дүүргийн код
     khorooCode: { type: String, default: '1' }, // Хорооны код / дугаар
-    branchNo: { type: String, default: '001' },
-    posNo: { type: String, default: '0001' },
     
     // Server Environment Options
     envMode: { type: String, enum: ['PRODUCTION', 'TEST'], default: 'PRODUCTION' },
@@ -57,8 +55,6 @@ export async function ensureDefaultEbarimtMerchant() {
         merchantTin: process.env.EBARIMT_MERCHANT_TIN || '37900846788',
         districtCode: process.env.EBARIMT_DISTRICT_CODE || '23',
         khorooCode: '20',
-        branchNo: '001',
-        posNo: '0001',
         envMode: 'PRODUCTION',
         prodApiUrl: 'http://103.143.40.43:7080/',
         testApiUrl: 'http://103.236.194.50:7080/',
