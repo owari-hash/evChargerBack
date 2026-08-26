@@ -186,15 +186,13 @@ async function run(): Promise<void> {
     timestamp: new Date().toISOString(),
   });
 
-  await runChargingSession(args.connector, args.idTag);
-
   await call('SecurityEventNotification', {
     type: 'StartupOfTheDevice',
     timestamp: new Date().toISOString(),
-    techInfo: 'simulator run complete',
+    techInfo: 'simulator online',
   });
 
-  console.log('simulation complete; keeping the connection open for remote commands (Ctrl+C to exit)');
+  console.log('simulator online with 2 connectors available; ready for web app remote commands (Ctrl+C to exit)');
 }
 
 async function runChargingSession(connectorId: number, idTag: string, seconds = args.seconds): Promise<void> {
