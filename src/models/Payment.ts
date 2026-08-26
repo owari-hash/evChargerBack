@@ -114,6 +114,7 @@ const paymentSchema = new Schema(
       status: { type: String, enum: ['SUCCESS', 'FAILED', 'PENDING'] },
       issuedAt: { type: Date },
       error: { type: String },
+      rawResponse: { type: Schema.Types.Mixed },
     },
   },
   {

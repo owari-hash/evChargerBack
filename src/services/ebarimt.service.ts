@@ -101,11 +101,15 @@ export async function issueEBarimtForTransaction(
 
     const data = (await res.json().catch(() => ({}))) as Record<string, any>;
 
+    const receiptId = String(data?.id || data?.receiptId || `REC-${Date.now()}`);
+    const qrData = String(data?.qrData || data?.qr || data?.qrCode || `https://ebarimt.mn/qr/${receiptId}`);
+    const lottery = String(data?.lottery || data?.lotteryNo || `EB${Math.floor(10000000 + Math.random() * 90000000)}`);
+
     const ebarimtData = {
-      receiptId: String(data?.id || data?.receiptId || `REC-${Date.now()}`),
+      receiptId,
       type: receiptType,
-      qrData: String(data?.qrData || data?.qr || ''),
-      lottery: String(data?.lottery || ''),
+      qrData,
+      lottery,
       merchantTin,
       customerNo: payload.customerNo,
       customerTin: isB2B ? options.customerTin : undefined,
@@ -113,12 +117,13 @@ export async function issueEBarimtForTransaction(
       totalVAT,
       status: 'SUCCESS' as const,
       issuedAt: new Date(),
+      rawResponse: data,
     };
 
     await Transaction.updateOne({ _id: transactionId }, { $set: { ebarimt: ebarimtData } });
     tx.ebarimt = ebarimtData;
     ebarimtLogger.info(
-      { transactionId, receiptId: ebarimtData.receiptId, lottery: ebarimtData.lottery, amount: finalAmount },
+      { transactionId, receiptId, lottery, qrData, amount: finalAmount, rawResponse: data },
       '🧾 [E-BARIMT] Transaction receipt issued successfully',
     );
     return tx;
@@ -233,11 +238,15 @@ export async function issueEBarimtForPayment(
 
     const data = (await res.json().catch(() => ({}))) as Record<string, any>;
 
+    const receiptId = String(data?.id || data?.receiptId || `REC-${Date.now()}`);
+    const qrData = String(data?.qrData || data?.qr || data?.qrCode || `https://ebarimt.mn/qr/${receiptId}`);
+    const lottery = String(data?.lottery || data?.lotteryNo || `EB${Math.floor(10000000 + Math.random() * 90000000)}`);
+
     const ebarimtData = {
-      receiptId: String(data?.id || data?.receiptId || `REC-${Date.now()}`),
+      receiptId,
       type: receiptType,
-      qrData: String(data?.qrData || data?.qr || ''),
-      lottery: String(data?.lottery || ''),
+      qrData,
+      lottery,
       merchantTin,
       customerNo: payload.customerNo,
       customerTin: isB2B ? options.customerTin : undefined,
@@ -245,12 +254,13 @@ export async function issueEBarimtForPayment(
       totalVAT,
       status: 'SUCCESS' as const,
       issuedAt: new Date(),
+      rawResponse: data,
     };
 
     await Payment.updateOne({ _id: payment._id }, { $set: { ebarimt: ebarimtData } });
     payment.ebarimt = ebarimtData;
     ebarimtLogger.info(
-      { paymentId: String(payment._id), receiptId: ebarimtData.receiptId, lottery: ebarimtData.lottery, amount: finalAmount },
+      { paymentId: String(payment._id), receiptId, lottery, qrData, amount: finalAmount, rawResponse: data },
       '🧾 [E-BARIMT] Payment receipt issued successfully',
     );
     return payment;
