@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { notFound } from '../../lib/errors';
-import { EbarimtMerchant } from '../../models/EbarimtMerchant';
+import { EbarimtMerchant, ensureDefaultEbarimtMerchant } from '../../models/EbarimtMerchant';
 import { checkEbarimtMerchant } from '../../services/ebarimt.service';
 import {
   asyncHandler,
@@ -23,6 +23,7 @@ ebarimtMerchantsRouter.get(
   '/',
   validate(listQuery, 'query'),
   asyncHandler(async (req, res) => {
+    await ensureDefaultEbarimtMerchant();
     const q = req.query as unknown as z.infer<typeof listQuery>;
     const filter: Record<string, unknown> = {};
     if (q.search) {

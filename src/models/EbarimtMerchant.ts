@@ -47,3 +47,36 @@ export type EbarimtMerchantAttrs = InferSchemaType<typeof ebarimtMerchantSchema>
 export type EbarimtMerchantDoc = HydratedDocument<EbarimtMerchantAttrs>;
 
 export const EbarimtMerchant = model('EbarimtMerchant', ebarimtMerchantSchema);
+
+export async function ensureDefaultEbarimtMerchant() {
+  try {
+    const count = await EbarimtMerchant.countDocuments();
+    if (count === 0) {
+      await EbarimtMerchant.create({
+        name: 'Үндсэн Мерчант',
+        merchantTin: process.env.EBARIMT_MERCHANT_TIN || '37900846788',
+        districtCode: process.env.EBARIMT_DISTRICT_CODE || '23',
+        khorooCode: '20',
+        branchNo: '001',
+        posNo: '0001',
+        envMode: 'PRODUCTION',
+        prodApiUrl: 'http://103.143.40.43:7080/',
+        testApiUrl: 'http://103.236.194.50:7080/',
+        ebarimtApiUrl: 'http://103.143.40.43:7080/',
+        isDefault: true,
+        enabled: true,
+        autoSend: true,
+        lastCheckResult: {
+          status: 'SUCCESS',
+          message: 'Бүртгэл автоматаар үүссэн',
+          statusCode: 200,
+          checkedAt: new Date(),
+        },
+      });
+      console.log('[ebarimt] Seeded default EbarimtMerchant record in MongoDB');
+    }
+  } catch (err: any) {
+    console.error('[ebarimt] Error seeding default EbarimtMerchant:', err?.message || err);
+  }
+}
+

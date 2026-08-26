@@ -1,6 +1,6 @@
 import { Transaction, type TransactionDoc } from '../models/Transaction';
 import { Payment, type PaymentDoc } from '../models/Payment';
-import { EbarimtMerchant } from '../models/EbarimtMerchant';
+import { EbarimtMerchant, ensureDefaultEbarimtMerchant } from '../models/EbarimtMerchant';
 
 export interface IssueEBarimtOptions {
   type?: 'B2C_RECEIPT' | 'B2B_RECEIPT';
@@ -30,7 +30,11 @@ export async function issueEBarimtForTransaction(
   const isB2B = options.type === 'B2B_RECEIPT' || Boolean(options.customerTin);
   const receiptType: 'B2C_RECEIPT' | 'B2B_RECEIPT' = isB2B ? 'B2B_RECEIPT' : 'B2C_RECEIPT';
 
-  const activeMerchant = await EbarimtMerchant.findOne({ isDefault: true, enabled: true }).lean().catch(() => null);
+  let activeMerchant = await EbarimtMerchant.findOne({ isDefault: true, enabled: true }).lean().catch(() => null);
+  if (!activeMerchant) {
+    await ensureDefaultEbarimtMerchant();
+    activeMerchant = await EbarimtMerchant.findOne({ isDefault: true, enabled: true }).lean().catch(() => null);
+  }
 
   const merchantTin = activeMerchant?.merchantTin || process.env.EBARIMT_MERCHANT_TIN || '6123456';
   const districtCode = activeMerchant?.districtCode || process.env.EBARIMT_DISTRICT_CODE || '23';
