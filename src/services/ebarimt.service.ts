@@ -116,6 +116,7 @@ export async function issueEBarimtForTransaction(
 
     tx.ebarimt = ebarimtData;
     await tx.save();
+    console.log(`[ebarimt] Issued transaction receipt ${ebarimtData.receiptId} (lottery: ${ebarimtData.lottery}) for tx #${transactionId}`);
     return tx;
   } catch (err: any) {
     console.error('[ebarimt] call failed:', err?.message || err);
@@ -137,6 +138,7 @@ export async function issueEBarimtForTransaction(
 
     tx.ebarimt = fallbackData;
     await tx.save();
+    console.log(`[ebarimt] Created fallback transaction receipt ${fallbackData.receiptId} (lottery: ${fallbackData.lottery}) for tx #${transactionId}`);
     return tx;
   }
 }
@@ -240,6 +242,7 @@ export async function issueEBarimtForPayment(
 
     payment.ebarimt = ebarimtData;
     await payment.save();
+    console.log(`[ebarimt] Issued payment receipt ${ebarimtData.receiptId} (lottery: ${ebarimtData.lottery}) for payment ${payment._id}`);
     return payment;
   } catch (err: any) {
     console.error('[ebarimt] payment call failed:', err?.message || err);
@@ -260,6 +263,7 @@ export async function issueEBarimtForPayment(
 
     payment.ebarimt = fallbackData;
     await payment.save();
+    console.log(`[ebarimt] Created fallback payment receipt ${fallbackData.receiptId} (lottery: ${fallbackData.lottery}) for payment ${payment._id}`);
     return payment;
   }
 }
