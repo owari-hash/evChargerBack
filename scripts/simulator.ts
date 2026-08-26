@@ -167,7 +167,13 @@ async function run(): Promise<void> {
     timestamp: new Date().toISOString(),
   });
   await call('StatusNotification', {
-    connectorId: args.connector,
+    connectorId: 1,
+    errorCode: 'NoError',
+    status: 'Available',
+    timestamp: new Date().toISOString(),
+  });
+  await call('StatusNotification', {
+    connectorId: 2,
     errorCode: 'NoError',
     status: 'Available',
     timestamp: new Date().toISOString(),
