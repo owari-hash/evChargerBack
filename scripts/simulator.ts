@@ -99,6 +99,13 @@ function handleCall(action: string, payload: Record<string, unknown>): unknown {
       return { fileName: 'diagnostics.zip' };
     case 'UnlockConnector':
       return { status: 'Unlocked' };
+    case 'RemoteStartTransaction': {
+      const connectorId = Number(payload.connectorId ?? args.connector ?? 1);
+      const idTag = String(payload.idTag ?? args.idTag ?? 'TAG-0001');
+      console.log(`   (simulator starting remote transaction on connector ${connectorId})`);
+      void runChargingSession(connectorId, idTag);
+      return { status: 'Accepted' };
+    }
     case 'RemoteStopTransaction':
       console.log('   (simulator will stop the running transaction)');
       stopNow = true;
@@ -179,12 +186,25 @@ async function run(): Promise<void> {
     timestamp: new Date().toISOString(),
   });
 
-  const auth = await call<{ idTagInfo: { status: string } }>('Authorize', { idTag: args.idTag });
+  await runChargingSession(args.connector, args.idTag);
+
+  await call('SecurityEventNotification', {
+    type: 'StartupOfTheDevice',
+    timestamp: new Date().toISOString(),
+    techInfo: 'simulator run complete',
+  });
+
+  console.log('simulation complete; keeping the connection open for remote commands (Ctrl+C to exit)');
+}
+
+async function runChargingSession(connectorId: number, idTag: string, seconds = args.seconds): Promise<void> {
+  stopNow = false;
+  const auth = await call<{ idTagInfo: { status: string } }>('Authorize', { idTag });
   console.log('authorize ->', auth.idTagInfo.status);
   if (auth.idTagInfo.status !== 'Accepted') return;
 
   await call('StatusNotification', {
-    connectorId: args.connector,
+    connectorId,
     errorCode: 'NoError',
     status: 'Preparing',
     timestamp: new Date().toISOString(),
@@ -192,26 +212,26 @@ async function run(): Promise<void> {
 
   let meterWh = 1_000_000;
   const start = await call<{ transactionId: number }>('StartTransaction', {
-    connectorId: args.connector,
-    idTag: args.idTag,
+    connectorId,
+    idTag,
     meterStart: meterWh,
     timestamp: new Date().toISOString(),
   });
   const transactionId = start.transactionId;
 
   await call('StatusNotification', {
-    connectorId: args.connector,
+    connectorId,
     errorCode: 'NoError',
     status: 'Charging',
     timestamp: new Date().toISOString(),
   });
 
-  const steps = Math.max(1, Math.floor(args.seconds / 5));
+  const steps = Math.max(1, Math.floor(seconds / 5));
   for (let i = 0; i < steps && !stopNow; i++) {
     await sleep(5000);
     meterWh += 30; // ~22 kW for 5 s
     await call('MeterValues', {
-      connectorId: args.connector,
+      connectorId,
       transactionId,
       meterValue: [
         {
@@ -233,24 +253,16 @@ async function run(): Promise<void> {
 
   await call('StopTransaction', {
     transactionId,
-    idTag: args.idTag,
+    idTag,
     meterStop: meterWh,
     timestamp: new Date().toISOString(),
     reason: stopNow ? 'Remote' : 'Local',
   });
 
   await call('StatusNotification', {
-    connectorId: args.connector,
+    connectorId,
     errorCode: 'NoError',
     status: 'Available',
     timestamp: new Date().toISOString(),
   });
-
-  await call('SecurityEventNotification', {
-    type: 'StartupOfTheDevice',
-    timestamp: new Date().toISOString(),
-    techInfo: 'simulator run complete',
-  });
-
-  console.log('simulation complete; keeping the connection open (Ctrl+C to exit)');
 }
