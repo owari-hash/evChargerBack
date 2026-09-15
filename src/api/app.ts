@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import mongoose from 'mongoose';
 import pinoHttp from 'pino-http';
 import { apiUrl, env, ocppUrl } from '../config/env';
+import { createDriverRouter } from '../driver';
 import { apiLogger } from '../lib/logger';
 import { connectionManager } from '../ocpp/manager';
 import { SUPPORTED_ACTIONS } from '../ocpp/schemas';
@@ -40,13 +41,18 @@ export function createApp(): Express {
       credentials: true,
     }),
   );
-  app.use(express.json({ limit: '2mb' }));
   app.use(
     pinoHttp({
       logger: apiLogger,
       autoLogging: { ignore: (req) => req.url?.startsWith(`${base}/events/stream`) === true },
     }),
   );
+
+  // Driver API for the kiosk web app and the Flutter app. Mounted before the
+  // app-wide JSON parser because it parses its own bodies (see createDriverRouter).
+  app.use(env.DRIVER_API_BASE_PATH, createDriverRouter());
+
+  app.use(express.json({ limit: '2mb' }));
 
   // ---- Health & discovery (unauthenticated) ----
 

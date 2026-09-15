@@ -40,6 +40,13 @@ const optRaw = z
   .optional()
   .transform((v) => (v ? v : undefined));
 
+/** String with a default that also applies when the variable is set but blank. */
+const text = (def: string) =>
+  z
+    .string()
+    .optional()
+    .transform((v) => v?.trim() || def);
+
 /** Comma-separated list of positive integers, e.g. "1000,3000,5000". */
 const intList = (def: number[]) =>
   z
@@ -166,6 +173,49 @@ const schema = z.object({
    * Off by default: turning it on stops every card that has no wallet yet.
    */
   WALLET_REQUIRE_BALANCE_TO_START: bool(false),
+
+  // ---- Driver API (/app-api) — used by the kiosk web app and the Flutter app ----
+  DRIVER_API_BASE_PATH: path('/app-api'),
+  /**
+   * Signs the driver session cookie and sign-up / PIN-reset tickets (32+ chars).
+   * Must be the value the kiosk web app used, or every driver is signed out.
+   */
+  SESSION_SECRET: optRaw,
+  SESSION_COOKIE_NAME: text('evapp_session'),
+  SESSION_MAX_AGE_DAYS: int(30),
+  /** Public origin of the driver web app, for links inside emails. */
+  APP_URL: url('https://eplug.mn'),
+  BRAND_NAME: text('Жиркто ххк'),
+  /** Used to expand a locally typed phone number to E.164. */
+  DEFAULT_COUNTRY_CODE: text('976'),
+  /** Let drivers start a charge from the app, not only at the station. */
+  ENABLE_REMOTE_START: bool(false),
+  /** Development only: SMS codes and email links come back in API responses. */
+  DEV_EXPOSE_TOKENS: bool(true),
+
+  EMAIL_PROVIDER: text('console'),
+  EMAIL_FROM: text('Zevtabs <no-reply@example.com>'),
+  SMTP_HOST: opt,
+  SMTP_PORT: int(587),
+  SMTP_SECURE: bool(false),
+  SMTP_USER: opt,
+  SMTP_PASS: optRaw,
+  SMTP_REJECT_UNAUTHORIZED: bool(true),
+  SMTP_POOL: bool(true),
+
+  /** console | callpro | messagepro | http | twilio */
+  SMS_PROVIDER: text('console'),
+  SMS_FROM: text('Zevtabs'),
+  SMS_HTTP_URL: opt,
+  SMS_HTTP_METHOD: text('GET'),
+  SMS_HTTP_BODY: opt,
+  SMS_HTTP_HEADERS: opt,
+  TWILIO_ACCOUNT_SID: opt,
+  TWILIO_AUTH_TOKEN: optRaw,
+  TWILIO_FROM: opt,
+  MESSAGEPRO_SMS_KEY: opt,
+  CALLPRO_SMS_KEY: opt,
+  CALLPRO_SMS_URL: text('https://api-text.callpro.mn/v1/sms/send'),
 
   TLS_ENABLED: bool(false),
   TLS_KEY_PATH: z.string().default('./certs/server.key'),

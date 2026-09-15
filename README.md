@@ -122,7 +122,7 @@ it with [`deploy/install-nginx-ubuntu.sh`](deploy/install-nginx-ubuntu.sh) (see
 | Path | Process | Port |
 |---|---|---|
 | `/` | driver web app (`../evChargerKiosk`) | 3100 |
-| `/app-api/*` | …its own JSON API, same process | 3100 |
+| `/app-api/*` | driver API — this backend (`src/driver`) | 3000 |
 | `/admin`, `/admin/*` | admin console (`../evChargerAdmin`) | 3001 |
 | `/admin/console-api/*` | …its own JSON API, same process | 3001 |
 | `/api/*`, `/ocpp/*`, `/health` | this backend | 3000 |
