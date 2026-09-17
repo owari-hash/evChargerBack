@@ -32,13 +32,13 @@ export function verifyEmail(url: string) {
 }
 
 export function signupSms(code: string, minutes: number): string {
-  return `${brand()}: Burtguulekh code ${code}. ${minutes} minutyn daraa khuchingui bolno.`;
+  return `Burtguulekh code ${code}. ${minutes} minutyn daraa khuchingui bolno.`;
 }
 
 export function pinResetSms(code: string, minutes: number): string {
-  return `${brand()}: PIN sergeekh code ${code}. ${minutes} minutyn daraa khuchingui bolno. Busadtai buu khuvaaltsaarai.`;
+  return `PIN sergeekh code ${code}. ${minutes} minutyn daraa khuchingui bolno. Busadtai buu khuvaaltsaarai.`;
 }
 
 export function phoneVerifySms(code: string, minutes: number): string {
-  return `${brand()}: Batalgaajuulakh code ${code}. ${minutes} minutyn daraa khuchingui bolno.`;
+  return `Batalgaajuulakh code ${code}. ${minutes} minutyn daraa khuchingui bolno.`;
 }
