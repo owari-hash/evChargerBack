@@ -4,6 +4,7 @@ import { env } from '../../config/env';
 import { serviceUnavailable } from '../../lib/errors';
 import * as quickqr from '../../services/qpay/quickqr.client';
 import { invalidateToken, tokenStatus } from '../../services/qpay/tokens';
+import { QpayMerchantConfig, ensureDefaultQpayMerchantConfig } from '../../models/QpayMerchantConfig';
 import { asyncHandler, requireAdmin, requireAuth, requireOperator, validate } from '../middleware';
 
 /**
@@ -25,6 +26,68 @@ qpayRouter.use((_req, _res, next) => {
   }
   next();
 });
+
+const activeMerchantSchema = z.object({
+  merchantId: z.string().min(1).max(255),
+  merchantName: z.string().max(255).optional(),
+  mccCode: z.string().min(1).max(255).default('5311'),
+  bankCode: z.string().min(1).max(255).default('050000'),
+  accountNumber: z.string().min(1).max(255),
+  accountName: z.string().min(1).max(255),
+});
+
+qpayRouter.get(
+  '/active-merchant',
+  asyncHandler(async (_req, res) => {
+    await ensureDefaultQpayMerchantConfig();
+    const config = await QpayMerchantConfig.findOne({ isActive: true }).lean();
+    if (!config) {
+      res.json({
+        merchantId: env.QPAY_QUICKQR_MERCHANT_ID || 'cc1a2b2f-aa84-474a-953c-c55b575a9883',
+        merchantName: env.QPAY_QUICKQR_ACCOUNT_NAME || 'ЗЭВ ТАБС ХХК',
+        mccCode: env.QPAY_QUICKQR_MCC_CODE || '5311',
+        bankCode: env.QPAY_QUICKQR_BANK_CODE || '050000',
+        accountNumber: env.QPAY_QUICKQR_ACCOUNT_NUMBER || '5475332224',
+        accountName: env.QPAY_QUICKQR_ACCOUNT_NAME || 'ЗЭВ ТАБС ХХК',
+        isActive: true,
+      });
+      return;
+    }
+    res.json({
+      ...config,
+      id: String(config._id),
+    });
+  }),
+);
+
+qpayRouter.put(
+  '/active-merchant',
+  validate(activeMerchantSchema),
+  asyncHandler(async (req, res) => {
+    const data = req.body as z.infer<typeof activeMerchantSchema>;
+    await QpayMerchantConfig.updateMany({}, { isActive: false });
+
+    const updated = await QpayMerchantConfig.findOneAndUpdate(
+      { merchantId: data.merchantId },
+      {
+        merchantId: data.merchantId,
+        merchantName: data.merchantName ?? data.accountName,
+        mccCode: data.mccCode,
+        bankCode: data.bankCode,
+        accountNumber: data.accountNumber,
+        accountName: data.accountName,
+        isActive: true,
+        updatedBy: req.user?.email ?? req.user?.id,
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true },
+    ).lean();
+
+    res.json({
+      ...updated,
+      id: String(updated._id),
+    });
+  }),
+);
 
 qpayRouter.get(
   '/tokens',

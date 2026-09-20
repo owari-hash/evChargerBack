@@ -8,6 +8,7 @@ import { createApp } from './api/app';
 import { attachOcppServer } from './ocpp/server';
 import { connectionManager } from './ocpp/manager';
 import { startMaintenanceJobs, stopMaintenanceJobs } from './services/maintenance.service';
+import { ensureDefaultQpayMerchantConfig } from './models';
 
 /**
  * Cipher suites required of the Central System by the OCA security white paper,
@@ -53,6 +54,7 @@ function buildServer(app: ReturnType<typeof createApp>) {
 
 async function main(): Promise<void> {
   await connectDatabase();
+  await ensureDefaultQpayMerchantConfig();
 
   const app = createApp();
   const server = buildServer(app);

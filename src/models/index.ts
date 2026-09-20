@@ -15,4 +15,5 @@ export * from './Payment';
 export * from './Wallet';
 export * from './QpayToken';
 export * from './EbarimtMerchant';
+export * from './QpayMerchantConfig';
 export { Counter, nextSequence, ensureSequenceAtLeast } from '../lib/counters';

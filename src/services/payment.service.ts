@@ -23,6 +23,7 @@ import {
 } from '../models/Payment';
 import type { WalletOwnerType } from '../models/Wallet';
 import { Transaction } from '../models/Transaction';
+import { QpayMerchantConfig } from '../models/QpayMerchantConfig';
 import { bus } from '../realtime/events';
 import { QpayError, qpayLogger } from './qpay/http';
 import * as merchant from './qpay/merchant.client';
@@ -62,20 +63,41 @@ function resolveProvider(input: { quickQrMerchantId?: string }): Provider {
   return env.QPAY_DEFAULT_PROVIDER === 'quickqr' ? 'QPAY_QUICKQR' : 'QPAY';
 }
 
-function assertQuickQrReady(merchantId: string | undefined): string {
+export async function getActiveQuickQrMerchantConfig(): Promise<{
+  merchantId: string;
+  mccCode?: string;
+  bankAccount?: { account_bank_code: string; account_number: string; account_name: string; is_default: true };
+}> {
   if (!env.QPAY_QUICKQR_ENABLED) {
     throw serviceUnavailable('QuickQR is disabled (QPAY_QUICKQR_ENABLED=false)');
   }
   if (!env.QPAY_QUICKQR_TERMINAL_ID?.trim()) {
     throw serviceUnavailable('QPAY_QUICKQR_TERMINAL_ID is not configured');
   }
-  const resolved = merchantId ?? env.QPAY_QUICKQR_MERCHANT_ID?.trim();
-  if (!resolved) {
-    throw serviceUnavailable(
-      'No QuickQR merchant: set QPAY_QUICKQR_MERCHANT_ID or pass quickQrMerchantId',
-    );
+
+  const dbConfig = await QpayMerchantConfig.findOne({ isActive: true }).lean();
+  const merchantId = dbConfig?.merchantId || env.QPAY_QUICKQR_MERCHANT_ID?.trim();
+  if (!merchantId) {
+    throw serviceUnavailable('No QuickQR merchant configured in database or environment');
   }
-  return resolved;
+
+  const mccCode = dbConfig?.mccCode?.trim() || env.QPAY_QUICKQR_MCC_CODE?.trim() || undefined;
+
+  let bankAccount:
+    | { account_bank_code: string; account_number: string; account_name: string; is_default: true }
+    | undefined;
+  if (dbConfig?.bankCode && dbConfig?.accountNumber && dbConfig?.accountName) {
+    bankAccount = {
+      account_bank_code: dbConfig.bankCode.trim(),
+      account_number: dbConfig.accountNumber.trim(),
+      account_name: dbConfig.accountName.trim(),
+      is_default: true,
+    };
+  } else {
+    bankAccount = qpayQuickQrBankAccount();
+  }
+
+  return { merchantId, mccCode, bankAccount };
 }
 
 /** Map a QpayError onto our HTTP error shape without leaking QPay internals. */
@@ -201,8 +223,18 @@ export async function createPayment(input: CreatePaymentInput): Promise<PaymentD
   }
 
   const provider = resolveProvider(input);
-  const quickQrMerchantId =
-    provider === 'QPAY_QUICKQR' ? assertQuickQrReady(input.quickQrMerchantId) : undefined;
+  let quickQrMerchantId: string | undefined;
+  let quickQrMccCode: string | undefined;
+  let quickQrBankAccount:
+    | { account_bank_code: string; account_number: string; account_name: string; is_default: true }
+    | undefined;
+
+  if (provider === 'QPAY_QUICKQR') {
+    const active = await getActiveQuickQrMerchantConfig();
+    quickQrMerchantId = input.quickQrMerchantId || active.merchantId;
+    quickQrMccCode = active.mccCode;
+    quickQrBankAccount = active.bankAccount;
+  }
   const ttlMinutes = input.expiryMinutes ?? env.QPAY_INVOICE_TTL_MINUTES;
   const callbackSecret = randomBytes(24).toString('base64url');
 
@@ -238,15 +270,14 @@ export async function createPayment(input: CreatePaymentInput): Promise<PaymentD
 
   try {
     if (provider === 'QPAY_QUICKQR') {
-      const defaultAccount = qpayQuickQrBankAccount();
       const res = await quickqr.createInvoice({
         merchant_id: quickQrMerchantId!,
         amount: finalAmount,
         currency: 'MNT',
         description: finalDescription,
-        mcc_code: env.QPAY_QUICKQR_MCC_CODE?.trim() || undefined,
+        mcc_code: quickQrMccCode,
         callback_url: callbackUrl,
-        bank_accounts: input.bankAccounts ?? (defaultAccount ? [defaultAccount] : undefined),
+        bank_accounts: input.bankAccounts ?? (quickQrBankAccount ? [quickQrBankAccount] : undefined),
       });
       const raw = res as unknown as Record<string, unknown>;
       const invoiceId = pickString(raw, 'invoice_id', 'invoiceId', 'id');
