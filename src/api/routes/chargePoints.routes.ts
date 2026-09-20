@@ -1,10 +1,12 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { randomBytes } from 'node:crypto';
+import { isValidObjectId } from 'mongoose';
 import { z } from 'zod';
 import { badRequest, notFound, conflict } from '../../lib/errors';
 import { requireChargePoint } from '../../lib/chargePointRef';
 import { ChargePoint } from '../../models/ChargePoint';
+import { Client } from '../../models/Client';
 import { Connector } from '../../models/Connector';
 import { Transaction } from '../../models/Transaction';
 import { ConfigurationKey } from '../../models/ConfigurationKey';
@@ -28,6 +30,7 @@ const listQuery = paginationSchema.extend({
   search: z.string().optional(),
   online: z.enum(['true', 'false']).optional(),
   status: z.string().optional(),
+  clientId: z.string().optional(),
 });
 
 chargePointsRouter.get(
@@ -45,6 +48,13 @@ chargePointsRouter.get(
       ];
     }
     if (q.online) filter.isOnline = q.online === 'true';
+    if (q.clientId) {
+      if (q.clientId === 'none') {
+        filter.clientId = null;
+      } else if (isValidObjectId(q.clientId)) {
+        filter.clientId = q.clientId;
+      }
+    }
 
     const { skip, limit } = paginate(q);
     const [items, total] = await Promise.all([
@@ -53,11 +63,28 @@ chargePointsRouter.get(
     ]);
 
     const ids = items.map((c) => c._id);
-    const connectors = await Connector.find({ chargePointId: { $in: ids } }).lean();
+    const clientIds = items.map((c) => c.clientId).filter(Boolean);
+    const [connectors, clients] = await Promise.all([
+      Connector.find({ chargePointId: { $in: ids } }).lean(),
+      clientIds.length > 0
+        ? Client.find({ _id: { $in: clientIds } }).select('_id name businessRegister').lean()
+        : [],
+    ]);
+
+    const clientMap = new Map<string, { id: string; name: string; businessRegister?: string }>();
+    for (const cl of clients) {
+      clientMap.set(String(cl._id), {
+        id: String(cl._id),
+        name: cl.name,
+        businessRegister: cl.businessRegister ?? undefined,
+      });
+    }
 
     const data = items.map((cp) => ({
       ...cp,
       id: String(cp._id),
+      clientId: cp.clientId ? String(cp.clientId) : null,
+      client: cp.clientId ? clientMap.get(String(cp.clientId)) ?? null : null,
       // The registry is keyed by the OCPP identifier the station connects with.
       isOnline: connectionManager.isOnline(cp.cpId),
       connectors: connectors
@@ -73,6 +100,7 @@ const createSchema = z.object({
   id: z.string().min(1).max(64).regex(/^[\w.:@-]+$/),
   name: z.string().optional(),
   description: z.string().optional(),
+  clientId: z.string().nullable().optional(),
   authorizationKey: z.string().min(16).max(40).optional(),
   securityProfile: z.number().int().min(0).max(3).optional(),
   registrationStatus: z.enum(REGISTRATION_STATUSES).optional(),
@@ -94,6 +122,14 @@ chargePointsRouter.post(
       throw conflict(`Charge point ${body.id} already exists`);
     }
 
+    let clientId: string | null = null;
+    if (body.clientId) {
+      if (!isValidObjectId(body.clientId)) throw badRequest('Invalid clientId');
+      const clientExists = await Client.exists({ _id: body.clientId });
+      if (!clientExists) throw badRequest('Client not found');
+      clientId = body.clientId;
+    }
+
     // If no key is supplied, generate one that satisfies A00.FR.205 (>= 16 bytes,
     // hex, max 40 characters). It is returned once and only stored hashed.
     const authorizationKey = body.authorizationKey ?? randomBytes(20).toString('hex');
@@ -102,6 +138,7 @@ chargePointsRouter.post(
       cpId: body.id,
       name: body.name,
       description: body.description,
+      clientId,
       authorizationKeyHash: await bcrypt.hash(authorizationKey, 12),
       securityProfile: body.securityProfile ?? 1,
       registrationStatus: body.registrationStatus ?? 'Accepted',
@@ -119,8 +156,18 @@ chargePointsRouter.post(
       { upsert: true },
     );
 
+    let client: { id: string; name: string; businessRegister?: string } | null = null;
+    if (cp.clientId) {
+      const cl = await Client.findById(cp.clientId).select('_id name businessRegister').lean();
+      if (cl) {
+        client = { id: String(cl._id), name: cl.name, businessRegister: cl.businessRegister ?? undefined };
+      }
+    }
+
     res.status(201).json({
       ...cp.toJSON(),
+      clientId: cp.clientId ? String(cp.clientId) : null,
+      client,
       // Shown once; store it in the charge point's AuthorizationKey config key.
       authorizationKey,
     });
@@ -133,15 +180,18 @@ chargePointsRouter.get(
     // Callers may hold either identifier, so both resolve.
     const cp = (await requireChargePoint(req.params.id!)).toJSON();
 
-    const [connectors, activeTransactions, configuration] = await Promise.all([
+    const [connectors, activeTransactions, configuration, client] = await Promise.all([
       Connector.find({ chargePointId: cp._id }).sort({ connectorId: 1 }).lean(),
       Transaction.find({ chargePointId: cp._id, status: 'Active' }).lean(),
       ConfigurationKey.find({ chargePointId: cp._id }).sort({ key: 1 }).lean(),
+      cp.clientId ? Client.findById(cp.clientId).select('_id name businessRegister').lean() : null,
     ]);
 
     res.json({
       ...cp,
       id: String(cp._id),
+      clientId: cp.clientId ? String(cp.clientId) : null,
+      client: client ? { id: String(client._id), name: client.name, businessRegister: client.businessRegister ?? undefined } : null,
       isOnline: connectionManager.isOnline(cp.cpId),
       connectors,
       activeTransactions,
@@ -163,6 +213,7 @@ const updateSchema = createSchema.partial().omit({ id: true }).extend({
   cpId: z.string().min(1).max(64).regex(/^[\w.:@-]+$/).optional(),
   name: z.string().nullable().optional(),
   description: z.string().nullable().optional(),
+  clientId: z.string().nullable().optional(),
   address: z.string().nullable().optional(),
   latitude: z.number().min(-90).max(90).nullable().optional(),
   longitude: z.number().min(-180).max(180).nullable().optional(),
@@ -188,8 +239,20 @@ chargePointsRouter.patch(
 
     const $set: Record<string, unknown> = {};
     const $unset: Record<string, ''> = {};
+
+    if (body.clientId !== undefined) {
+      if (body.clientId === null || body.clientId === '') {
+        $unset.clientId = '';
+      } else {
+        if (!isValidObjectId(body.clientId)) throw badRequest('Invalid clientId');
+        const clientExists = await Client.exists({ _id: body.clientId });
+        if (!clientExists) throw badRequest('Client not found');
+        $set.clientId = body.clientId;
+      }
+    }
+
     for (const [key, value] of Object.entries(body)) {
-      if (key === 'authorizationKey') continue;
+      if (key === 'authorizationKey' || key === 'clientId') continue;
       if (value === null) $unset[key] = '';
       else $set[key] = value;
     }
@@ -206,7 +269,21 @@ chargePointsRouter.patch(
 
     const updated = await ChargePoint.findByIdAndUpdate(cp._id, update, { new: true });
     if (!updated) throw notFound('Charge point not found');
-    res.json({ ...updated.toJSON(), ...(newKey ? { authorizationKey: newKey } : {}) });
+
+    let client: { id: string; name: string; businessRegister?: string } | null = null;
+    if (updated.clientId) {
+      const cl = await Client.findById(updated.clientId).select('_id name businessRegister').lean();
+      if (cl) {
+        client = { id: String(cl._id), name: cl.name, businessRegister: cl.businessRegister ?? undefined };
+      }
+    }
+
+    res.json({
+      ...updated.toJSON(),
+      clientId: updated.clientId ? String(updated.clientId) : null,
+      client,
+      ...(newKey ? { authorizationKey: newKey } : {}),
+    });
   }),
 );
 

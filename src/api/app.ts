@@ -28,6 +28,7 @@ import { securityRouter } from './routes/security.routes';
 import { transactionsRouter } from './routes/transactions.routes';
 import { walletsRouter } from './routes/wallets.routes';
 import { ebarimtMerchantsRouter } from './routes/ebarimt-merchants.routes';
+import { clientsRouter } from './routes/clients.routes';
 
 export function createApp(): Express {
   const app = express();
@@ -123,6 +124,7 @@ export function createApp(): Express {
   api.use('/wallets', walletsRouter);
   api.use('/qpay', qpayRouter);
   api.use('/ebarimt-merchants', ebarimtMerchantsRouter);
+  api.use('/clients', clientsRouter);
   api.use('/security', securityRouter);
   api.use('/stats', statsRouter);
   api.use('/events', eventsRouter);

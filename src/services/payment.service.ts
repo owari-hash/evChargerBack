@@ -270,15 +270,43 @@ export async function createPayment(input: CreatePaymentInput): Promise<PaymentD
 
   try {
     if (provider === 'QPAY_QUICKQR') {
-      const res = await quickqr.createInvoice({
-        merchant_id: quickQrMerchantId!,
-        amount: finalAmount,
-        currency: 'MNT',
-        description: finalDescription,
-        mcc_code: quickQrMccCode,
-        callback_url: callbackUrl,
-        bank_accounts: input.bankAccounts ?? (quickQrBankAccount ? [quickQrBankAccount] : undefined),
-      });
+      let res: quickqr.QuickQrInvoiceResult;
+      try {
+        res = await quickqr.createInvoice({
+          merchant_id: quickQrMerchantId!,
+          amount: finalAmount,
+          currency: 'MNT',
+          description: finalDescription,
+          mcc_code: quickQrMccCode,
+          callback_url: callbackUrl,
+          bank_accounts: input.bankAccounts ?? (quickQrBankAccount ? [quickQrBankAccount] : undefined),
+        });
+      } catch (invoiceErr) {
+        const fallbackMerchantId = env.QPAY_QUICKQR_MERCHANT_ID?.trim() || 'cc1a2b2f-aa84-474a-953c-c55b575a9883';
+        const isMerchantNotFound =
+          invoiceErr instanceof QpayError &&
+          (invoiceErr.message.includes('MERCHANT_NOTFOUND') || invoiceErr.message.includes('not found'));
+
+        if (isMerchantNotFound && quickQrMerchantId !== fallbackMerchantId) {
+          qpayLogger.warn(
+            { failedMerchantId: quickQrMerchantId, fallbackMerchantId },
+            'QuickQR merchant rejected with MERCHANT_NOTFOUND — falling back to default verified merchant',
+          );
+          const fallbackBank = qpayQuickQrBankAccount();
+          res = await quickqr.createInvoice({
+            merchant_id: fallbackMerchantId,
+            amount: finalAmount,
+            currency: 'MNT',
+            description: finalDescription,
+            mcc_code: env.QPAY_QUICKQR_MCC_CODE?.trim() || '5311',
+            callback_url: callbackUrl,
+            bank_accounts: input.bankAccounts ?? (fallbackBank ? [fallbackBank] : undefined),
+          });
+          payment.merchantId = fallbackMerchantId;
+        } else {
+          throw invoiceErr;
+        }
+      }
       const raw = res as unknown as Record<string, unknown>;
       const invoiceId = pickString(raw, 'invoice_id', 'invoiceId', 'id');
       if (!invoiceId) {

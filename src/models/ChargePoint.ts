@@ -43,6 +43,7 @@ const chargePointSchema = new Schema(
     numberOfConnectors: { type: Number, default: 0 },
 
     // Site metadata
+    clientId: { type: Schema.Types.ObjectId, ref: 'Client', default: null, index: true },
     latitude: { type: Number },
     longitude: { type: Number },
     address: { type: String },
