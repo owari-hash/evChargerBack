@@ -101,6 +101,8 @@ export interface PublicUser {
   hasPin: boolean;
   /** The account's charge tag; absent only until one could be issued. */
   idTag?: string;
+  vehicleBrand?: string;
+  vehicleModel?: string;
   locale: string;
   createdAt: string;
   lastLoginAt?: string;

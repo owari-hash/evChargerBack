@@ -33,6 +33,8 @@ accountRoutes.patch(
     const patch: Partial<StoredUser> = {};
     if (body.name !== undefined) patch.name = body.name || undefined;
     if (body.locale !== undefined) patch.locale = body.locale;
+    if (body.vehicleBrand !== undefined) patch.vehicleBrand = body.vehicleBrand || undefined;
+    if (body.vehicleModel !== undefined) patch.vehicleModel = body.vehicleModel || undefined;
 
     if (body.email !== undefined && (body.email || undefined) !== user.email) {
       if (body.email) {

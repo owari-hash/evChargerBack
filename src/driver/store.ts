@@ -27,6 +27,9 @@ export interface StoredUser {
   isActive: boolean;
   /** The account's charge tag — the identity OCPP authorises against. */
   idTag?: string;
+  /** The vehicle this driver charges — shown on an active session, not OCPP data. */
+  vehicleBrand?: string;
+  vehicleModel?: string;
   locale: string;
   /** Bumped on PIN reset or change so existing session cookies stop validating. */
   tokenVersion: number;
@@ -84,6 +87,8 @@ const driverUserSchema = new Schema(
     phoneVerifiedAt: { type: Date },
     isActive: { type: Boolean, default: true },
     idTag: { type: String, index: true, sparse: true },
+    vehicleBrand: { type: String, trim: true },
+    vehicleModel: { type: String, trim: true },
     locale: { type: String, default: 'en' },
     tokenVersion: { type: Number, default: 0 },
     lastLoginAt: { type: Date },
@@ -137,6 +142,8 @@ interface DriverUserDoc {
   phoneVerifiedAt?: Date;
   isActive: boolean;
   idTag?: string;
+  vehicleBrand?: string;
+  vehicleModel?: string;
   locale: string;
   tokenVersion: number;
   lastLoginAt?: Date;
@@ -180,6 +187,8 @@ function toUser(doc: DriverUserDoc): StoredUser {
     phoneVerifiedAt: doc.phoneVerifiedAt?.toISOString(),
     isActive: doc.isActive !== false,
     idTag: doc.idTag ?? undefined,
+    vehicleBrand: doc.vehicleBrand || undefined,
+    vehicleModel: doc.vehicleModel || undefined,
     locale: doc.locale ?? 'en',
     tokenVersion: doc.tokenVersion ?? 0,
     createdAt: doc.createdAt?.toISOString() ?? new Date().toISOString(),

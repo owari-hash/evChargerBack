@@ -120,6 +120,8 @@ export function toPublicUser(user: StoredUser): PublicUser {
     phoneVerified: Boolean(user.phoneVerifiedAt),
     hasPin: Boolean(user.pinHash),
     idTag: user.idTag,
+    vehicleBrand: user.vehicleBrand,
+    vehicleModel: user.vehicleModel,
     locale: user.locale ?? 'en',
     createdAt: user.createdAt,
     lastLoginAt: user.lastLoginAt,
