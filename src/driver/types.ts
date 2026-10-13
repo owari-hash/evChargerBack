@@ -26,6 +26,8 @@ export interface StationConnector {
   availability: 'Operative' | 'Inoperative';
   type?: ConnectorType;
   powerKw?: number;
+  /** Operator's label for the physical gun, e.g. "Зүүн тал". */
+  label?: string;
   currentTransactionId: number | null;
   lastPowerW?: number;
   lastSocPercent?: number;

@@ -48,6 +48,10 @@ const objectIdsOnly = (ids: unknown[]): string[] =>
 
 interface RawConnector {
   connectorId: number;
+  /** Operator-set in the console; OCPP 1.6 reports none of these. */
+  connectorType?: string | null;
+  powerKw?: number | null;
+  label?: string | null;
   status?: string;
   errorCode?: string;
   availability?: string;
@@ -165,8 +169,12 @@ function toStation(cp: RawChargePoint, rawConnectors: RawConnector[], feePercent
             : 'Unavailable',
         errorCode: c.errorCode ?? 'NoError',
         availability: c.availability === 'Inoperative' ? 'Inoperative' : 'Operative',
-        type: scoped?.type ?? tagInfo.types[0],
-        powerKw: scoped?.powerKw ?? tagInfo.powerKw,
+        // The connector's own fields win: they are set by an operator in the
+        // console and are what the QR sticker is printed from. Tags remain the
+        // fallback for stations configured before those fields existed.
+        type: (c.connectorType as ConnectorType | undefined) ?? scoped?.type ?? tagInfo.types[0],
+        powerKw: c.powerKw ?? scoped?.powerKw ?? tagInfo.powerKw,
+        label: c.label ?? undefined,
         currentTransactionId: c.currentTransactionId ?? null,
         lastPowerW: c.lastPowerW,
         lastSocPercent: c.lastSocPercent,
