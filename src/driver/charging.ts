@@ -525,3 +525,34 @@ export async function requestEBarimt(
   const tx = await issueEBarimtForTransaction(transactionId, options);
   return toSession(tx.toObject() as unknown as RawTransaction);
 }
+
+/**
+ * Releases the cable lock on the gun a session ran on.
+ *
+ * After StopTransaction the connector sits in `Finishing` with the cable still
+ * latched, and on this hardware a driver has no way to free it from the unit —
+ * so without this they are physically attached to the charger. Safe to call
+ * when the session has already ended; that is in fact the normal case.
+ */
+export async function unlockSessionConnector(
+  transactionId: number,
+  issuedBy: string,
+): Promise<{ status: string }> {
+  const tx = await Transaction.findById(transactionId);
+  if (!tx) throw notFound('Тухайн цэнэглэлтийг олсонгүй');
+
+  // Unlocking mid-charge would drop the contactor with current flowing. The
+  // station is the final authority, but do not even ask.
+  if (tx.status === 'Active') {
+    throw badRequest('Эхлээд цэнэглэлтээ зогсооно уу');
+  }
+
+  const cp = await requireChargePoint(String(tx.chargePointId));
+  const result = await sendToStation<{ status: string }>(
+    cp.cpId,
+    'UnlockConnector',
+    { connectorId: tx.connectorId },
+    issuedBy,
+  );
+  return { status: result.status };
+}

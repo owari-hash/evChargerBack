@@ -11,6 +11,7 @@ import {
   listStations,
   remoteStart,
   remoteStop,
+  unlockSessionConnector,
   requestEBarimt,
 } from '../charging';
 import {
@@ -171,6 +172,29 @@ sessionRoutes.post(
     }
 
     const { status } = await remoteStop(transactionId, issuer(user));
+    return { status };
+  }),
+);
+
+/**
+ * Frees the cable after a session has ended. Without it a driver on hardware
+ * that latches the gun is left physically attached to the charger.
+ */
+sessionRoutes.post(
+  '/:id/unlock',
+  route(async (req) => {
+    const user = await requireUser(req);
+    const transactionId = transactionIdOf(req.params.id, 'Цэнэглэлтийн энэ дугаар буруу байна');
+
+    const session = await getTransaction(transactionId);
+    if (!session) throw notFound('Тухайн цэнэглэлтийг олсонгүй');
+
+    // Only the account whose tag charged there may release that gun.
+    if (!user.idTag || user.idTag !== session.idTag) {
+      throw forbidden('Энэ цэнэглэлт өөр бүртгэлд хамаарна');
+    }
+
+    const { status } = await unlockSessionConnector(transactionId, issuer(user));
     return { status };
   }),
 );
