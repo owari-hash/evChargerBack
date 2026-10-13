@@ -28,6 +28,7 @@ import { securityRouter } from './routes/security.routes';
 import { transactionsRouter } from './routes/transactions.routes';
 import { walletsRouter } from './routes/wallets.routes';
 import { ebarimtMerchantsRouter } from './routes/ebarimt-merchants.routes';
+import { appReleasesRouter } from './routes/appReleases.routes';
 import { clientsRouter } from './routes/clients.routes';
 import { settlementsRouter } from './routes/settlements.routes';
 
@@ -103,6 +104,7 @@ export function createApp(): Express {
         walletTopUp: `${base}/wallets/:ownerType/:ownerId/topup`,
         qpayCallback: `${base}/payments/callback/:paymentId/:secret`,
         quickQr: `${base}/qpay`,
+        appReleases: `${base}/app-releases`,
         stats: `${base}/stats`,
         eventStream: `${base}/events/stream`,
       },
@@ -125,6 +127,7 @@ export function createApp(): Express {
   api.use('/wallets', walletsRouter);
   api.use('/qpay', qpayRouter);
   api.use('/ebarimt-merchants', ebarimtMerchantsRouter);
+  api.use('/app-releases', appReleasesRouter);
   api.use('/clients', clientsRouter);
   api.use('/settlements', settlementsRouter);
   api.use('/security', securityRouter);

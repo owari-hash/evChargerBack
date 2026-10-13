@@ -2,6 +2,7 @@ import express, { Router } from 'express';
 import { sessionSecret } from './config';
 import { driverErrorHandler, driverLogger } from './http';
 import { accountRoutes } from './routes/account';
+import { appRoutes } from './routes/app';
 import { authRoutes } from './routes/auth';
 import { sessionRoutes, stationRoutes, walletRoutes } from './routes/charging';
 
@@ -29,6 +30,7 @@ export function createDriverRouter(): Router {
     next();
   });
 
+  router.use('/app', appRoutes);
   router.use('/auth', authRoutes);
   router.use('/account', accountRoutes);
   router.use('/stations', stationRoutes);
