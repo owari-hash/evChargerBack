@@ -102,7 +102,12 @@ const createSchema = z.object({
   name: z.string().optional(),
   description: z.string().optional(),
   clientId: z.string().nullable().optional(),
-  authorizationKey: z.string().min(16).max(40).optional(),
+  /**
+   * Omitted generates one. Explicit null means the station authenticates with
+   * no HTTP Basic credentials — which is how most hardware ships, and what
+   * OCPP_ALLOW_ANONYMOUS exists for.
+   */
+  authorizationKey: z.string().min(16).max(40).nullable().optional(),
   securityProfile: z.number().int().min(0).max(3).optional(),
   registrationStatus: z.enum(REGISTRATION_STATUSES).optional(),
   heartbeatInterval: z.number().int().min(10).optional(),
@@ -136,16 +141,22 @@ chargePointsRouter.post(
       clientId = body.clientId;
     }
 
-    // If no key is supplied, generate one that satisfies A00.FR.205 (>= 16 bytes,
-    // hex, max 40 characters). It is returned once and only stored hashed.
-    const authorizationKey = body.authorizationKey ?? randomBytes(20).toString('hex');
+    // Explicit null: no credentials at all, for a station that sends none.
+    // Omitted: generate one satisfying A00.FR.205 (>= 16 bytes, hex, <= 40 chars).
+    // It is returned once and only ever stored hashed.
+    const anonymous = body.authorizationKey === null;
+    const authorizationKey = anonymous
+      ? null
+      : (body.authorizationKey ?? randomBytes(20).toString('hex'));
 
     const cp = await ChargePoint.create({
       cpId: body.id,
       name: body.name,
       description: body.description,
       clientId,
-      authorizationKeyHash: await bcrypt.hash(authorizationKey, 12),
+      authorizationKeyHash: authorizationKey
+        ? await bcrypt.hash(authorizationKey, 12)
+        : undefined,
       securityProfile: body.securityProfile ?? 1,
       registrationStatus: body.registrationStatus ?? 'Accepted',
       heartbeatInterval: body.heartbeatInterval ?? 300,
@@ -177,6 +188,7 @@ chargePointsRouter.post(
       clientId: cp.clientId ? String(cp.clientId) : null,
       client,
       // Shown once; store it in the charge point's AuthorizationKey config key.
+      // Null when the station was registered without credentials.
       authorizationKey,
     });
   }),
@@ -278,8 +290,15 @@ chargePointsRouter.patch(
 
     let newKey: string | undefined;
     if (body.authorizationKey !== undefined) {
-      newKey = body.authorizationKey;
-      $set.authorizationKeyHash = await bcrypt.hash(newKey, 12);
+      if (body.authorizationKey === null) {
+        // Drop the credentials: the station connects with no HTTP Basic, which
+        // is how most hardware ships. Lets a charge point created with a key be
+        // made anonymous without deleting and re-registering it.
+        $unset.authorizationKeyHash = '';
+      } else {
+        newKey = body.authorizationKey;
+        $set.authorizationKeyHash = await bcrypt.hash(newKey, 12);
+      }
     }
 
     const update: Record<string, unknown> = {};
