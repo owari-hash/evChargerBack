@@ -14,6 +14,7 @@ import { ConfigurationKey } from '../../models/ConfigurationKey';
 import { OcppMessageLog, CommandLog } from '../../models/Log';
 import { REGISTRATION_STATUSES } from '../../models/enums';
 import { connectionManager } from '../../ocpp/manager';
+import { connectorQrUrl } from '../../services/connector.service';
 import {
   asyncHandler,
   paginate,
@@ -90,7 +91,8 @@ chargePointsRouter.get(
       isOnline: connectionManager.isOnline(cp.cpId),
       connectors: connectors
         .filter((c) => String(c.chargePointId) === String(cp._id))
-        .sort((a, b) => a.connectorId - b.connectorId),
+        .sort((a, b) => a.connectorId - b.connectorId)
+        .map((c) => ({ ...c, id: String(c._id), qrUrl: c.code ? connectorQrUrl(c.code) : null })),
     }));
 
     res.json({ data, total, page: q.page, limit: q.limit });
@@ -213,7 +215,13 @@ chargePointsRouter.get(
       clientId: cp.clientId ? String(cp.clientId) : null,
       client: client ? { id: String(client._id), name: client.name, businessRegister: client.businessRegister ?? undefined } : null,
       isOnline: connectionManager.isOnline(cp.cpId),
-      connectors,
+      // `.lean()` bypasses the toJSON transform that would add `id`, so it is
+      // added here: without it the console cannot address a connector to edit.
+      connectors: connectors.map((c) => ({
+        ...c,
+        id: String(c._id),
+        qrUrl: c.code ? connectorQrUrl(c.code) : null,
+      })),
       activeTransactions,
       configuration,
     });
@@ -367,11 +375,23 @@ chargePointsRouter.delete(
   }),
 );
 
+/**
+ * This router is mounted before `connectorAdminRouter`, so this handler shadows
+ * the equivalent one there. Kept in step with it — both return `id` and the
+ * sticker URL — so which one answers is not something a caller has to care about.
+ */
 chargePointsRouter.get(
   '/:id/connectors',
   asyncHandler(async (req, res) => {
     const cp = await requireChargePoint(req.params.id!);
-    res.json(await Connector.find({ chargePointId: cp._id }).sort({ connectorId: 1 }));
+    const rows = await Connector.find({ chargePointId: cp._id }).sort({ connectorId: 1 }).lean();
+    res.json(
+      rows.map((c) => ({
+        ...c,
+        id: String(c._id),
+        qrUrl: c.code ? connectorQrUrl(c.code) : null,
+      })),
+    );
   }),
 );
 

@@ -33,11 +33,13 @@ const chargePointSchema = new Schema(
     meterSerialNumber: { type: String },
 
     /**
-     * Set when the serial a pile reports in BootNotification disagrees with the
-     * one it connects as. Almost always a cloned config: two units sharing a
-     * URL silently merge into one record and bill to the wrong pile.
+     * Set when a pile starts reporting a different serial than it did before,
+     * i.e. the hardware behind this identity changed. Almost always a cloned
+     * config: two units sharing a URL silently merge into one record and bill
+     * to the wrong pile.
      */
     serialMismatch: {
+      previousSerial: { type: String },
       reportedSerial: { type: String },
       detectedAt: { type: Date },
     },

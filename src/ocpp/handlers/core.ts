@@ -24,6 +24,12 @@ export async function onBootNotification(
   payload: Req<typeof core.BootNotificationReq>,
   conn: ChargePointConnection,
 ) {
+  // Read before the update below overwrites it, so a changed serial is visible.
+  const previous = await ChargePoint.findById(conn.ref)
+    .select('chargePointSerialNumber')
+    .lean();
+  const previousSerial = previous?.chargePointSerialNumber?.trim();
+
   const cp = await ChargePoint.findByIdAndUpdate(
     conn.ref,
     {
@@ -45,21 +51,28 @@ export async function onBootNotification(
     { new: true },
   );
 
-  // The pile connects as one serial and reports another: nearly always a config
-  // cloned to a second unit whose URL was never changed. Left undetected, both
-  // units share a record, overwrite each other's connectors, and bill the wrong
-  // pile — so it is recorded and logged loudly rather than quietly tolerated.
+  // The hardware behind this identity changed: it used to report one serial and
+  // now reports another. Nearly always a config cloned onto a second unit whose
+  // URL was never updated — and left undetected both units share one record,
+  // overwrite each other's connectors, and bill the wrong pile.
+  //
+  // Deliberately compared against the PREVIOUS serial rather than against the
+  // cpId: an operator is free to name a station "BAGANUUR-01" instead of using
+  // its serial, and that is not an error. A serial that changes under a stable
+  // identity always is.
   const reported = payload.chargePointSerialNumber?.trim();
-  if (reported && cp && reported !== cp.cpId) {
+  if (reported && previousSerial && reported !== previousSerial) {
     ocppLogger.error(
-      { cp: conn.cpId, connectedAs: cp.cpId, reportedSerial: reported },
-      'charge point serial does not match the identity it connected with',
+      { cp: conn.cpId, previousSerial, reportedSerial: reported },
+      'charge point now reports a different serial than before',
     );
     await ChargePoint.findByIdAndUpdate(conn.ref, {
-      $set: { serialMismatch: { reportedSerial: reported, detectedAt: new Date() } },
+      $set: {
+        serialMismatch: { previousSerial, reportedSerial: reported, detectedAt: new Date() },
+      },
     }).catch(() => undefined);
   } else if (cp?.serialMismatch?.reportedSerial) {
-    // Resolved; stop warning about it.
+    // Back to one consistent serial; stop flagging it.
     await ChargePoint.findByIdAndUpdate(conn.ref, {
       $unset: { serialMismatch: '' },
     }).catch(() => undefined);
