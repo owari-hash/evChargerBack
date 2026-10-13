@@ -1,7 +1,14 @@
 import { findChargePoint, requireChargePoint } from '../lib/chargePointRef';
 import { badRequest, notFound } from '../lib/errors';
-import { driverLogger } from './http';
+import { DriverError, driverLogger } from './http';
+import { env } from '../config/env';
+import { HttpError } from '../lib/errors';
+import { Reservation } from '../models/Reservation';
+import { CallTimeoutError, OcppRpcError } from '../ocpp/types';
+import { hasBalanceToStart } from '../services/wallet.service';
 import { ChargePoint } from '../models/ChargePoint';
+import { Client } from '../models/Client';
+import { driverTariff, feePercentForStation, resolveFeePercent } from '../services/pricing.service';
 import { Connector } from '../models/Connector';
 import { IdTag } from '../models/IdTag';
 import { Transaction } from '../models/Transaction';
@@ -59,6 +66,8 @@ interface RawChargePoint {
   latitude?: number;
   longitude?: number;
   tariffPerKwh?: number;
+  feePercent?: number;
+  clientId?: unknown;
   chargePointVendor?: string;
   chargePointModel?: string;
   tags?: string[];
@@ -133,7 +142,7 @@ function parseTags(tags: string[]): TagInfo {
   return info;
 }
 
-function toStation(cp: RawChargePoint, rawConnectors: RawConnector[]): Station {
+function toStation(cp: RawChargePoint, rawConnectors: RawConnector[], feePercent: number): Station {
   const id = String(cp._id);
   const tags = cp.tags ?? [];
   const tagInfo = parseTags(tags);
@@ -189,7 +198,11 @@ function toStation(cp: RawChargePoint, rawConnectors: RawConnector[]): Station {
     address: cp.address,
     latitude: cp.latitude,
     longitude: cp.longitude,
-    tariffPerKwh: cp.tariffPerKwh,
+    // What the driver pays per kWh, Eplug's fee included; every client shows
+    // and estimates with this. The parts are there for a breakdown.
+    tariffPerKwh: driverTariff(cp.tariffPerKwh, feePercent),
+    baseTariffPerKwh: cp.tariffPerKwh,
+    feePercent,
     vendor: cp.chargePointVendor,
     model: cp.chargePointModel,
     tags,
@@ -252,6 +265,12 @@ export async function listStations(
     chargePointId: { $in: objectIdsOnly(chargePoints.map((cp) => cp._id)) },
   }).lean<Array<RawConnector & { chargePointId: unknown }>>();
 
+  const clientIds = objectIdsOnly(chargePoints.map((cp) => cp.clientId).filter(Boolean));
+  const clients = clientIds.length
+    ? await Client.find({ _id: { $in: clientIds } }).select('feePercent').lean()
+    : [];
+  const clientFee = new Map(clients.map((c) => [String(c._id), c]));
+
   const origin =
     query.lat !== undefined && query.lng !== undefined ? { lat: query.lat, lng: query.lng } : undefined;
 
@@ -260,6 +279,7 @@ export async function listStations(
       toStation(
         cp,
         connectors.filter((c) => String(c.chargePointId) === String(cp._id)),
+        resolveFeePercent(cp, cp.clientId ? clientFee.get(String(cp.clientId)) : null),
       ),
     )
     .map((station) => {
@@ -293,7 +313,7 @@ export async function getStation(idOrCpId: string): Promise<Station | null> {
   if (!cp) return null;
   const raw = cp.toObject() as unknown as RawChargePoint;
   const connectors = await Connector.find({ chargePointId: cp._id }).lean<RawConnector[]>();
-  return toStation(raw, connectors);
+  return toStation(raw, connectors, await feePercentForStation(cp));
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +330,9 @@ interface RawTransaction {
   stopTimestamp?: Date;
   energyWh?: number;
   cost?: number;
+  energyCost?: number;
+  feeAmount?: number;
+  feePercent?: number;
   lastPowerW?: number;
   lastSocPercent?: number;
   stopReason?: string | null;
@@ -327,6 +350,9 @@ function toSession(tx: RawTransaction): ChargingSession {
     stopTimestamp: iso(tx.stopTimestamp),
     energyKwh: Number(((tx.energyWh ?? 0) / 1000).toFixed(3)),
     cost: tx.cost,
+    energyCost: tx.energyCost,
+    feeAmount: tx.feeAmount,
+    feePercent: tx.feePercent,
     lastPowerW: tx.lastPowerW,
     lastSocPercent: tx.lastSocPercent,
     stopReason: tx.stopReason ?? undefined,
@@ -371,6 +397,50 @@ export async function getTransaction(id: number): Promise<ChargingSession | null
   return tx ? toSession(tx) : null;
 }
 
+/** Send to a station, with the failures put the way a driver can act on them. */
+async function sendToStation<T>(cpId: string, action: string, payload: unknown, issuedBy: string): Promise<T> {
+  try {
+    return await connectionManager.send<T>(cpId, action, payload, issuedBy);
+  } catch (err) {
+    if (err instanceof HttpError && err.status === 503) {
+      throw new DriverError(503, 'Станц сүлжээнд холбогдоогүй байна. Түр хүлээгээд дахин оролдоно уу.');
+    }
+    if (err instanceof CallTimeoutError) {
+      throw new DriverError(504, 'Станц хугацаандаа хариу өгсөнгүй. Дахин оролдоно уу.');
+    }
+    if (err instanceof OcppRpcError) {
+      throw new DriverError(502, 'Станц хүсэлтийг гүйцэтгэж чадсангүй. Дахин оролдоно уу.');
+    }
+    throw err;
+  }
+}
+
+/** A connector a new session can start on right now. */
+async function startable(
+  c: { chargePointId: unknown; connectorId: number; status?: string; availability?: string },
+  idTag: string,
+): Promise<boolean> {
+  if (c.availability === 'Inoperative') return false;
+  const status = c.status ?? 'Available';
+  if (status === 'Available' || status === 'Preparing') return true;
+  if (status === 'Reserved') {
+    return Boolean(
+      await Reservation.exists({
+        chargePointId: c.chargePointId,
+        connectorId: c.connectorId,
+        state: 'Active',
+        idTag,
+      }),
+    );
+  }
+  return false;
+}
+
+/**
+ * Ask the station to start. Everything the driver can be told up front is
+ * checked here, so a start that cannot run is refused with the reason instead
+ * of being reported as "Accepted" and then silently rejected by the station.
+ */
 export async function remoteStart(
   chargePointId: string,
   idTag: string,
@@ -381,7 +451,39 @@ export async function remoteStart(
   if (!(await IdTag.exists({ _id: idTag }))) {
     throw badRequest(`Unknown idTag "${idTag}"`);
   }
-  return connectionManager.send<{ status: string }>(
+  if (!connectionManager.isOnline(cp.cpId)) {
+    throw new DriverError(503, 'Станц сүлжээнд холбогдоогүй байна. Түр хүлээгээд дахин оролдоно уу.');
+  }
+  if (await Transaction.exists({ idTag, status: 'Active' })) {
+    throw new DriverError(409, 'Танд үргэлжилж буй цэнэглэлт байна. Эхлээд түүнийгээ дуусгана уу.');
+  }
+  if (env.WALLET_ENABLED && env.WALLET_REQUIRE_BALANCE_TO_START) {
+    const funds = await hasBalanceToStart(idTag);
+    if (!funds.ok) {
+      throw new DriverError(
+        402,
+        `Хэтэвчний үлдэгдэл хүрэлцэхгүй байна. Цэнэглэлт эхлүүлэхэд хамгийн багадаа ${funds.required.toLocaleString('mn-MN')}₮ шаардлагатай. Хэтэвчээ цэнэглэнэ үү.`,
+      );
+    }
+  }
+
+  const connectors = await Connector.find({ chargePointId: cp._id, connectorId: { $gt: 0 } }).lean();
+  if (connectorId !== undefined) {
+    const target = connectors.find((c) => c.connectorId === connectorId);
+    if (!target) {
+      throw new DriverError(400, 'Энэ станцад ийм дугаартай холбогч байхгүй байна');
+    }
+    if (!(await startable(target, idTag))) {
+      throw new DriverError(409, 'Энэ холбогч одоо ашиглах боломжгүй байна. Өөр холбогч сонгоно уу.');
+    }
+  } else if (connectors.length > 0) {
+    const free = await Promise.all(connectors.map((c) => startable(c, idTag)));
+    if (!free.some(Boolean)) {
+      throw new DriverError(409, 'Одоогоор сул холбогч алга. Түр хүлээгээд дахин оролдоно уу.');
+    }
+  }
+
+  return sendToStation<{ status: string }>(
     cp.cpId,
     'RemoteStartTransaction',
     { idTag, ...(connectorId ? { connectorId } : {}) },
@@ -395,7 +497,7 @@ export async function remoteStop(transactionId: number, issuedBy: string): Promi
   if (tx.status !== 'Active') return { status: 'AlreadyStopped' };
 
   const cp = await requireChargePoint(String(tx.chargePointId));
-  const result = await connectionManager.send<{ status: string }>(
+  const result = await sendToStation<{ status: string }>(
     cp.cpId,
     'RemoteStopTransaction',
     { transactionId: tx._id },

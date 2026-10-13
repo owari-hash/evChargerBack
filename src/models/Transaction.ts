@@ -31,7 +31,34 @@ const transactionSchema = new Schema(
     lastMeterValueAt: { type: Date },
 
     tariffPerKwh: { type: Number },
+    /** Total the driver pays: energyCost + feeAmount. */
     cost: { type: Number },
+    /** kWh × tariffPerKwh. */
+    energyCost: { type: Number },
+    /** Eplug's service fee, energyCost × feePercent / 100. */
+    feeAmount: { type: Number },
+    /** Fee and owning client as they were when the session started. */
+    feePercent: { type: Number },
+    clientId: { type: Schema.Types.ObjectId, ref: 'Client', index: true },
+
+    /**
+     * True when the CSMS closed the session itself (reboot orphan, operator
+     * force-close) from the last known meter. The station's own StopTransaction
+     * may still arrive with the real meterStop; it then re-settles the bill once.
+     */
+    closedByCsms: { type: Boolean, default: false },
+
+    /** Буцаалт — the session's charge returned to the wallet. */
+    refund: {
+      state: { type: String, enum: ['PENDING', 'DONE'] },
+      amount: { type: Number },
+      reason: { type: String },
+      refundedBy: { type: String },
+      refundedAt: { type: Date },
+      walletEntryId: { type: String },
+      /** Whether a real e-barimt receipt was returned at the PosAPI. */
+      ebarimtReturned: { type: Boolean },
+    },
 
     ebarimt: {
       receiptId: { type: String },
@@ -43,8 +70,11 @@ const transactionSchema = new Schema(
       customerTin: { type: String },
       totalAmount: { type: Number },
       totalVAT: { type: Number },
-      status: { type: String, enum: ['SUCCESS', 'FAILED', 'PENDING'] },
+      status: { type: String, enum: ['SUCCESS', 'FAILED', 'PENDING', 'REFUNDED'] },
       issuedAt: { type: Date },
+      /** Set when the receipt was returned (cancelled) at the PosAPI. */
+      returnedAt: { type: Date },
+      returnResponse: { type: Schema.Types.Mixed },
       error: { type: String },
       rawResponse: { type: Schema.Types.Mixed },
     },

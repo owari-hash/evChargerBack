@@ -48,6 +48,10 @@ const chargePointSchema = new Schema(
     longitude: { type: Number },
     address: { type: String },
     tariffPerKwh: { type: Number },
+    /** Overrides the client's / network fee for this station. Unset = inherit. */
+    feePercent: { type: Number, min: 0, max: 100 },
+    /** Overrides the client's e-barimt merchant for this station. Unset = inherit. */
+    ebarimtMerchantId: { type: Schema.Types.ObjectId, ref: 'EbarimtMerchant' },
     tags: { type: [String], default: [] },
   },
   {

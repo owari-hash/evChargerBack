@@ -61,7 +61,8 @@ export const STOP_REASONS = [
 ] as const;
 export type StopReason = (typeof STOP_REASONS)[number];
 
-export const TRANSACTION_STATUSES = ['Active', 'Completed', 'Rejected'] as const;
+/** `Refunded`: a completed session whose charge was returned to the wallet (Буцаалт). */
+export const TRANSACTION_STATUSES = ['Active', 'Completed', 'Rejected', 'Refunded'] as const;
 export type TransactionStatus = (typeof TRANSACTION_STATUSES)[number];
 
 export const RESERVATION_STATES = ['Active', 'Used', 'Cancelled', 'Expired', 'Rejected'] as const;

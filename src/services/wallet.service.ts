@@ -442,6 +442,66 @@ export async function chargeSessionToWallet(input: {
 }
 
 /**
+ * What a session has cost its wallet so far, net of any corrections, and the
+ * wallet it was charged to. `owner` is null when nothing was ever charged.
+ */
+export async function netChargeForTransaction(
+  transactionId: number,
+): Promise<{ charged: number; owner: WalletOwner | null }> {
+  const entries = await WalletEntry.find({ transactionId }).lean();
+  if (entries.length === 0) return { charged: 0, owner: null };
+  const first = entries[0]!;
+  return {
+    // Debits are negative in the ledger; a positive result is money taken.
+    charged: -entries.reduce((sum, e) => sum + e.amount, 0),
+    owner: { ownerType: first.ownerType as WalletOwnerType, ownerId: first.ownerId },
+  };
+}
+
+/**
+ * Bring a session's wallet charge to `amount` after its energy was corrected
+ * by a late StopTransaction: the difference is debited, or credited back.
+ * Like chargeSessionToWallet it never throws.
+ */
+export async function resettleSessionWallet(input: {
+  transactionId: number;
+  idTag: string;
+  amount: number;
+  chargePointId?: Types.ObjectId;
+  connectorId?: number;
+  energyWh?: number;
+}): Promise<WalletMovement | null> {
+  if (!env.WALLET_ENABLED) return null;
+  try {
+    const { charged, owner } = await netChargeForTransaction(input.transactionId);
+    // Never charged (the CSMS closed it at 0 Wh): this is the first charge.
+    if (!owner) return await chargeSessionToWallet(input);
+
+    const delta = Math.round(input.amount) - charged;
+    if (delta === 0) return null;
+
+    const kwh = ((input.energyWh ?? 0) / 1000).toFixed(2);
+    const ref: LedgerRef = {
+      description: `Цэнэглэлт #${input.transactionId} · залруулга ${kwh} кВт·ц`,
+      idempotencyKey: `transaction:${input.transactionId}:resettle`,
+      transactionId: input.transactionId,
+      chargePointId: input.chargePointId,
+      connectorId: input.connectorId,
+      idTag: input.idTag,
+    };
+    return delta > 0
+      ? await debit(owner, delta, 'CHARGE', ref, { allowNegative: true })
+      : await credit(owner, -delta, 'REFUND', ref);
+  } catch (err) {
+    walletLogger.error(
+      { err: (err as Error).message, transactionId: input.transactionId },
+      'failed to re-settle session wallet charge',
+    );
+    return null;
+  }
+}
+
+/**
  * Whether an idTag has enough balance to start a session. Used by the Authorize
  * pre-check, which only enforces it when WALLET_REQUIRE_BALANCE_TO_START is on.
  */

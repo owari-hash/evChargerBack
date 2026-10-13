@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { badRequest, notFound, conflict } from '../../lib/errors';
 import { requireChargePoint } from '../../lib/chargePointRef';
 import { ChargePoint } from '../../models/ChargePoint';
+import { EbarimtMerchant } from '../../models/EbarimtMerchant';
 import { Client } from '../../models/Client';
 import { Connector } from '../../models/Connector';
 import { Transaction } from '../../models/Transaction';
@@ -109,6 +110,10 @@ const createSchema = z.object({
   longitude: z.number().optional(),
   address: z.string().optional(),
   tariffPerKwh: z.number().nonnegative().optional(),
+  /** Overrides the client / network fee. */
+  feePercent: z.number().min(0).max(100).optional(),
+  /** Overrides the client's e-barimt merchant. */
+  ebarimtMerchantId: z.string().optional(),
   tags: z.array(z.string()).optional(),
 });
 
@@ -118,6 +123,7 @@ chargePointsRouter.post(
   validate(createSchema),
   asyncHandler(async (req, res) => {
     const body = req.body as z.infer<typeof createSchema>;
+    await assertEbarimtMerchant(body.ebarimtMerchantId);
     if (await ChargePoint.exists({ cpId: body.id })) {
       throw conflict(`Charge point ${body.id} already exists`);
     }
@@ -147,6 +153,8 @@ chargePointsRouter.post(
       longitude: body.longitude,
       address: body.address,
       tariffPerKwh: body.tariffPerKwh,
+      feePercent: body.feePercent,
+      ebarimtMerchantId: body.ebarimtMerchantId || undefined,
       tags: body.tags ?? [],
     });
 
@@ -218,7 +226,17 @@ const updateSchema = createSchema.partial().omit({ id: true }).extend({
   latitude: z.number().min(-90).max(90).nullable().optional(),
   longitude: z.number().min(-180).max(180).nullable().optional(),
   tariffPerKwh: z.number().nonnegative().nullable().optional(),
+  feePercent: z.number().min(0).max(100).nullable().optional(),
+  ebarimtMerchantId: z.string().nullable().optional(),
 });
+
+/** An e-barimt merchant reference must point at a real merchant. */
+async function assertEbarimtMerchant(id: string | null | undefined): Promise<void> {
+  if (!id) return;
+  if (!isValidObjectId(id) || !(await EbarimtMerchant.exists({ _id: id }))) {
+    throw badRequest('E-barimt merchant not found');
+  }
+}
 
 chargePointsRouter.patch(
   '/:id',
@@ -227,6 +245,7 @@ chargePointsRouter.patch(
   asyncHandler(async (req, res) => {
     const body = req.body as z.infer<typeof updateSchema>;
     const cp = await requireChargePoint(req.params.id!);
+    await assertEbarimtMerchant(body.ebarimtMerchantId);
 
     if (body.cpId !== undefined && body.cpId !== cp.cpId) {
       if (await ChargePoint.exists({ cpId: body.cpId })) {

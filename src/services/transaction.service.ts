@@ -4,13 +4,14 @@ import { logger } from '../lib/logger';
 import { ChargePoint } from '../models/ChargePoint';
 import { Connector } from '../models/Connector';
 import { Reservation } from '../models/Reservation';
-import { Transaction } from '../models/Transaction';
+import { Transaction, type TransactionDoc } from '../models/Transaction';
 import type { StopReason } from '../models/enums';
 import type { IdTagInfo, MeterValueEntry } from '../ocpp/schemas/common';
 import { bus } from '../realtime/events';
 import { authorizeIdTag, canStopTransaction } from './authorization.service';
 import { storeMeterValues } from './meter.service';
-import { chargeSessionToWallet } from './wallet.service';
+import { applySessionCost, feePercentForStation } from './pricing.service';
+import { chargeSessionToWallet, resettleSessionWallet } from './wallet.service';
 
 export interface StartTransactionInput {
   /** The charge point's `_id`, which is what the records reference. */
@@ -32,6 +33,45 @@ export interface StartTransactionResult {
 export async function startTransaction(
   input: StartTransactionInput,
 ): Promise<StartTransactionResult> {
+  // A station that never got our .conf resends the identical StartTransaction.
+  // Answer with the transaction already opened for it: a second one would fail
+  // ConcurrentTx and leave the first Active forever, locking the driver's tag.
+  const replay = await Transaction.findOne({
+    chargePointId: input.chargePointId,
+    connectorId: input.connectorId,
+    idTag: input.idTag,
+    meterStart: input.meterStart,
+    startTimestamp: input.timestamp,
+  });
+  if (replay) {
+    logger.info(
+      { cp: input.cpId, transactionId: replay._id },
+      'StartTransaction replayed; returning the existing transaction',
+    );
+    const replayInfo = await authorizeIdTag(input.idTag, {
+      chargePointId: input.chargePointId,
+      // The replayed transaction is itself the tag's one active session.
+      skipConcurrencyCheck: replay.status === 'Active',
+    });
+    return { transactionId: replay._id, idTagInfo: replayInfo };
+  }
+
+  // A connector runs one transaction at a time. A new start on a connector we
+  // still hold a session for means that session ended without its
+  // StopTransaction reaching us; close it before the tag check counts it.
+  const stale = await Transaction.find({
+    chargePointId: input.chargePointId,
+    connectorId: input.connectorId,
+    status: 'Active',
+  });
+  for (const old of stale) {
+    logger.warn(
+      { cp: input.cpId, connectorId: input.connectorId, transactionId: old._id },
+      'new StartTransaction on a busy connector; closing the stale transaction',
+    );
+    await closeFromLastMeter(old, input.cpId, 'Other');
+  }
+
   const idTagInfo = await authorizeIdTag(input.idTag, { chargePointId: input.chargePointId });
 
   // OCPP 1.6: a transactionId is always returned, even when authorization is
@@ -51,6 +91,11 @@ export async function startTransaction(
     startTimestamp: input.timestamp,
     reservationId: input.reservationId,
     tariffPerKwh: cp?.tariffPerKwh ?? undefined,
+    // Snapshot the price terms and the owner: a later change must not reprice
+    // a running session or move its earnings to another client.
+    feePercent: cp ? await feePercentForStation(cp) : undefined,
+    // null = "no client", distinct from sessions recorded before this field existed.
+    clientId: cp?.clientId ?? null,
   });
 
   if (idTagInfo.status === 'Accepted') {
@@ -123,9 +168,7 @@ export async function stopTransaction(
     tx.stopIdTag = input.idTag;
     tx.energyWh = Math.max(0, input.meterStop - tx.meterStart);
     tx.lastMeterWh = input.meterStop;
-    if (tx.tariffPerKwh) {
-      tx.cost = Number(((tx.energyWh / 1000) * tx.tariffPerKwh).toFixed(4));
-    }
+    applySessionCost(tx);
     await tx.save();
 
     await Connector.updateOne(
@@ -157,6 +200,8 @@ export async function stopTransaction(
         energyWh: tx.energyWh ?? 0,
       });
     }
+  } else if (tx.status === 'Completed' && tx.closedByCsms) {
+    await resettleClosedTransaction(tx._id, input);
   }
 
   if (!input.idTag) return {};
@@ -170,6 +215,109 @@ export async function stopTransaction(
   return { idTagInfo };
 }
 
+/**
+ * Close a session the station never sent a StopTransaction for, billing the
+ * last meter reading we saw. It is marked `closedByCsms`, so if the station's
+ * own StopTransaction turns up afterwards (OCPP has it queue one across a
+ * reboot) the bill is corrected to the real meterStop, once.
+ */
+export async function closeFromLastMeter(
+  tx: TransactionDoc,
+  cpId: string,
+  reason: StopReason,
+  meterStop: number = tx.lastMeterWh ?? tx.meterStart,
+): Promise<void> {
+  tx.status = 'Completed';
+  tx.closedByCsms = true;
+  tx.stopTimestamp = new Date();
+  tx.stopReason = reason;
+  tx.meterStop = meterStop;
+  tx.energyWh = Math.max(0, meterStop - tx.meterStart);
+  applySessionCost(tx);
+  await tx.save();
+
+  await Connector.updateOne(
+    { chargePointId: tx.chargePointId, connectorId: tx.connectorId, currentTransactionId: tx._id },
+    { $set: { currentTransactionId: null } },
+  ).catch(() => undefined);
+
+  bus.emitEvent('transaction.stopped', cpId, {
+    transactionId: tx._id,
+    reason,
+    orphaned: true,
+  });
+
+  // Energy the car actually took still has to be paid for, even though the
+  // charge point never sent a StopTransaction for it.
+  if (tx.cost && tx.cost > 0) {
+    await chargeSessionToWallet({
+      transactionId: tx._id,
+      idTag: tx.idTag,
+      amount: tx.cost,
+      chargePointId: tx.chargePointId,
+      connectorId: tx.connectorId,
+      energyWh: tx.energyWh ?? 0,
+    });
+  }
+}
+
+/**
+ * The station's StopTransaction for a session we already closed ourselves.
+ * Its meterStop is the real one, so energy, cost and the wallet charge are
+ * brought in line with it — up or down. Claimed atomically, so a retried
+ * StopTransaction cannot settle twice.
+ */
+async function resettleClosedTransaction(
+  transactionId: number,
+  input: StopTransactionInput,
+): Promise<void> {
+  const tx = await Transaction.findOneAndUpdate(
+    { _id: transactionId, status: 'Completed', closedByCsms: true },
+    { $set: { closedByCsms: false } },
+    { new: true },
+  );
+  if (!tx) return;
+
+  const energyWh = Math.max(0, input.meterStop - tx.meterStart);
+  if (energyWh === tx.energyWh) return;
+
+  const previousWh = tx.energyWh ?? 0;
+  tx.meterStop = input.meterStop;
+  tx.lastMeterWh = input.meterStop;
+  tx.energyWh = energyWh;
+  tx.stopTimestamp = input.timestamp;
+  if (input.reason) tx.stopReason = input.reason;
+  if (input.idTag) tx.stopIdTag = input.idTag;
+  applySessionCost(tx);
+  await tx.save();
+
+  logger.info(
+    { cp: input.cpId, transactionId, previousWh, energyWh, cost: tx.cost },
+    'late StopTransaction re-settled a CSMS-closed transaction',
+  );
+
+  bus.emitEvent('transaction.stopped', input.cpId, {
+    transactionId: tx._id,
+    connectorId: tx.connectorId,
+    idTag: tx.idTag,
+    meterStop: input.meterStop,
+    energyWh,
+    cost: tx.cost,
+    reason: tx.stopReason,
+    timestamp: input.timestamp,
+    resettled: true,
+  });
+
+  await resettleSessionWallet({
+    transactionId: tx._id,
+    idTag: tx.idTag,
+    amount: tx.cost ?? 0,
+    chargePointId: tx.chargePointId,
+    connectorId: tx.connectorId,
+    energyWh,
+  });
+}
+
 /** Close transactions left dangling by a charge point that rebooted mid-charge. */
 export async function closeOrphanedTransactions(
   chargePointId: Types.ObjectId,
@@ -178,33 +326,7 @@ export async function closeOrphanedTransactions(
 ): Promise<number> {
   const open = await Transaction.find({ chargePointId, status: 'Active' });
   for (const tx of open) {
-    tx.status = 'Completed';
-    tx.stopTimestamp = new Date();
-    tx.stopReason = reason;
-    tx.meterStop = tx.lastMeterWh ?? tx.meterStart;
-    tx.energyWh = Math.max(0, (tx.meterStop ?? tx.meterStart) - tx.meterStart);
-    if (tx.tariffPerKwh) {
-      tx.cost = Number(((tx.energyWh / 1000) * tx.tariffPerKwh).toFixed(4));
-    }
-    await tx.save();
-    bus.emitEvent('transaction.stopped', cpId, {
-      transactionId: tx._id,
-      reason,
-      orphaned: true,
-    });
-
-    // Energy the car actually took still has to be paid for, even though the
-    // charge point never sent a StopTransaction for it.
-    if (tx.cost && tx.cost > 0) {
-      await chargeSessionToWallet({
-        transactionId: tx._id,
-        idTag: tx.idTag,
-        amount: tx.cost,
-        chargePointId: tx.chargePointId,
-        connectorId: tx.connectorId,
-        energyWh: tx.energyWh ?? 0,
-      });
-    }
+    await closeFromLastMeter(tx, cpId, reason);
   }
   if (open.length > 0) {
     await Connector.updateMany(

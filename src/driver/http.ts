@@ -133,11 +133,11 @@ export const driverErrorHandler: ErrorRequestHandler = (err, _req, res, _next) =
     return;
   }
   if (err instanceof CallTimeoutError) {
-    res.status(504).json({ error: err.message });
+    res.status(504).json({ error: 'Станц хугацаандаа хариу өгсөнгүй. Дахин оролдоно уу.' });
     return;
   }
   if (err instanceof OcppRpcError) {
-    res.status(502).json({ error: 'The charge point returned an OCPP error' });
+    res.status(502).json({ error: 'Станц хүсэлтийг гүйцэтгэж чадсангүй. Дахин оролдоно уу.' });
     return;
   }
 

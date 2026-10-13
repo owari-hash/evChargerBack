@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { isValidObjectId, Types } from 'mongoose';
 import { badRequest, notFound } from '../../lib/errors';
+import { EbarimtMerchant } from '../../models/EbarimtMerchant';
 import { Client } from '../../models/Client';
 import { ChargePoint } from '../../models/ChargePoint';
 import { Connector } from '../../models/Connector';
@@ -32,7 +33,27 @@ const clientInputSchema = z.object({
   address: z.string().max(300).optional().nullable(),
   description: z.string().max(1000).optional().nullable(),
   isActive: z.boolean().default(true),
+  /** Eplug's service fee on this client's stations. Null = network default. */
+  feePercent: z.number().min(0).max(100).optional().nullable(),
+  /** Receipts for this client's stations are issued under this merchant. */
+  ebarimtMerchantId: z.string().optional().nullable(),
+  payoutAccount: z
+    .object({
+      bankCode: z.string().max(20).optional(),
+      bankName: z.string().max(100).optional(),
+      accountNumber: z.string().max(50).optional(),
+      accountName: z.string().max(200).optional(),
+    })
+    .optional()
+    .nullable(),
 });
+
+async function assertEbarimtMerchant(id: string | null | undefined): Promise<void> {
+  if (!id) return;
+  if (!isValidObjectId(id) || !(await EbarimtMerchant.exists({ _id: id }))) {
+    throw badRequest('E-barimt merchant not found');
+  }
+}
 
 clientsRouter.get(
   '/',
@@ -118,6 +139,7 @@ clientsRouter.post(
   validate(clientInputSchema),
   asyncHandler(async (req, res) => {
     const body = req.body as z.infer<typeof clientInputSchema>;
+    await assertEbarimtMerchant(body.ebarimtMerchantId);
 
     const created = await Client.create({
       name: body.name.trim(),
@@ -128,6 +150,9 @@ clientsRouter.post(
       address: body.address?.trim() || null,
       description: body.description?.trim() || null,
       isActive: body.isActive ?? true,
+      feePercent: body.feePercent ?? undefined,
+      ebarimtMerchantId: body.ebarimtMerchantId || undefined,
+      payoutAccount: body.payoutAccount ?? undefined,
     });
 
     res.status(201).json({
@@ -147,6 +172,7 @@ clientsRouter.patch(
     if (!isValidObjectId(id)) throw badRequest('Invalid client id');
 
     const body = req.body as Partial<z.infer<typeof clientInputSchema>>;
+    await assertEbarimtMerchant(body.ebarimtMerchantId);
     const $set: Record<string, unknown> = {};
     const $unset: Record<string, ''> = {};
 

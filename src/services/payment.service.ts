@@ -30,6 +30,7 @@ import * as merchant from './qpay/merchant.client';
 import * as quickqr from './qpay/quickqr.client';
 import { credit as creditWallet, debit as debitWallet } from './wallet.service';
 import { issueEBarimtForTransaction, issueEBarimtForPayment } from './ebarimt.service';
+import { sessionCost } from './pricing.service';
 
 /** MNT has no subunits in practice — QPay expects whole tugrik. */
 const normaliseAmount = (amount: number): number => {
@@ -190,7 +191,7 @@ export async function createPayment(input: CreatePaymentInput): Promise<PaymentD
     if (!tx) throw notFound(`Transaction ${input.transactionId} not found`);
     if (amount === undefined) {
       const derived =
-        tx.cost ?? (tx.tariffPerKwh ? ((tx.energyWh ?? 0) / 1000) * tx.tariffPerKwh : undefined);
+        tx.cost ?? sessionCost(tx.energyWh ?? 0, tx.tariffPerKwh, tx.feePercent)?.cost;
       if (derived === undefined) {
         throw badRequest(
           `Transaction ${input.transactionId} has no cost or tariffPerKwh; pass an explicit amount`,
@@ -270,43 +271,17 @@ export async function createPayment(input: CreatePaymentInput): Promise<PaymentD
 
   try {
     if (provider === 'QPAY_QUICKQR') {
-      let res: quickqr.QuickQrInvoiceResult;
-      try {
-        res = await quickqr.createInvoice({
-          merchant_id: quickQrMerchantId!,
-          amount: finalAmount,
-          currency: 'MNT',
-          description: finalDescription,
-          mcc_code: quickQrMccCode,
-          callback_url: callbackUrl,
-          bank_accounts: input.bankAccounts ?? (quickQrBankAccount ? [quickQrBankAccount] : undefined),
-        });
-      } catch (invoiceErr) {
-        const fallbackMerchantId = env.QPAY_QUICKQR_MERCHANT_ID?.trim() || 'cc1a2b2f-aa84-474a-953c-c55b575a9883';
-        const isMerchantNotFound =
-          invoiceErr instanceof QpayError &&
-          (invoiceErr.message.includes('MERCHANT_NOTFOUND') || invoiceErr.message.includes('not found'));
-
-        if (isMerchantNotFound && quickQrMerchantId !== fallbackMerchantId) {
-          qpayLogger.warn(
-            { failedMerchantId: quickQrMerchantId, fallbackMerchantId },
-            'QuickQR merchant rejected with MERCHANT_NOTFOUND — falling back to default verified merchant',
-          );
-          const fallbackBank = qpayQuickQrBankAccount();
-          res = await quickqr.createInvoice({
-            merchant_id: fallbackMerchantId,
-            amount: finalAmount,
-            currency: 'MNT',
-            description: finalDescription,
-            mcc_code: env.QPAY_QUICKQR_MCC_CODE?.trim() || '5311',
-            callback_url: callbackUrl,
-            bank_accounts: input.bankAccounts ?? (fallbackBank ? [fallbackBank] : undefined),
-          });
-          payment.merchantId = fallbackMerchantId;
-        } else {
-          throw invoiceErr;
-        }
-      }
+      // A rejected merchant is an error. Retrying on another merchant would put
+      // the driver's money in an account it was never meant for.
+      const res = await quickqr.createInvoice({
+        merchant_id: quickQrMerchantId!,
+        amount: finalAmount,
+        currency: 'MNT',
+        description: finalDescription,
+        mcc_code: quickQrMccCode,
+        callback_url: callbackUrl,
+        bank_accounts: input.bankAccounts ?? (quickQrBankAccount ? [quickQrBankAccount] : undefined),
+      });
       const raw = res as unknown as Record<string, unknown>;
       const invoiceId = pickString(raw, 'invoice_id', 'invoiceId', 'id');
       if (!invoiceId) {

@@ -3,7 +3,7 @@ import type { Duplex } from 'node:stream';
 import type { Types } from 'mongoose';
 import type { TLSSocket } from 'node:tls';
 import bcrypt from 'bcryptjs';
-import { WebSocketServer, type WebSocket } from 'ws';
+import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 import { env } from '../config/env';
 import { ocppLogger } from '../lib/logger';
 import { ChargePoint } from '../models/ChargePoint';
@@ -191,6 +191,13 @@ async function onConnection(
   req: IncomingMessage,
   cpId: string,
 ): Promise<void> {
+  // A station sends BootNotification the moment the socket opens, before the
+  // row lookup below resolves and the connection attaches its own handler.
+  // Hold those frames and replay them, in order, once it has.
+  const early: RawData[] = [];
+  const hold = (raw: RawData) => early.push(raw);
+  ws.on('message', hold);
+
   const remoteAddress =
     (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim() ??
     req.socket.remoteAddress ??
@@ -240,6 +247,8 @@ async function onConnection(
 
   const conn = new ChargePointConnection(ws, context, handleInboundCall);
   connectionManager.add(conn);
+  ws.off('message', hold);
+  for (const raw of early) ws.emit('message', raw, false);
 
   ocppLogger.info({ cp: cpId, remoteAddress }, 'charge point connected');
 

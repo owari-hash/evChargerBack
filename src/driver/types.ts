@@ -42,7 +42,12 @@ export interface Station {
   address?: string;
   latitude?: number;
   longitude?: number;
+  /** Per kWh as the driver pays it — Eplug's fee included. */
   tariffPerKwh?: number;
+  /** The station's own tariff, before the fee. */
+  baseTariffPerKwh?: number;
+  /** Eplug's service fee on this station, in percent. */
+  feePercent?: number;
   vendor?: string;
   model?: string;
   tags: string[];
@@ -79,11 +84,15 @@ export interface ChargingSession {
   stationName?: string;
   connectorId: number;
   idTag: string;
-  status: 'Active' | 'Completed' | 'Rejected';
+  status: 'Active' | 'Completed' | 'Rejected' | 'Refunded';
   startTimestamp: string;
   stopTimestamp?: string;
   energyKwh: number;
+  /** Total paid: energyCost + feeAmount. */
   cost?: number;
+  energyCost?: number;
+  feeAmount?: number;
+  feePercent?: number;
   lastPowerW?: number;
   lastSocPercent?: number;
   stopReason?: string;

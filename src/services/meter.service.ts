@@ -5,11 +5,6 @@ import { Connector } from '../models/Connector';
 import { bus } from '../realtime/events';
 import type { MeterValueEntry } from '../ocpp/schemas/common';
 
-const ENERGY_MEASURANDS = new Set([
-  'Energy.Active.Import.Register',
-  'Energy.Active.Import.Interval',
-]);
-
 function toWh(value: number, unit?: string): number {
   return unit === 'kWh' ? value * 1000 : value;
 }
@@ -24,22 +19,40 @@ interface Extracted {
   socPercent?: number;
 }
 
-function extract(entry: MeterValueEntry): Extracted {
-  const out: Extracted = {};
-  for (const sv of entry.sampledValue) {
-    const num = Number(sv.value);
-    if (!Number.isFinite(num)) continue;
-    const measurand = sv.measurand ?? 'Energy.Active.Import.Register';
+const PHASES = ['L1', 'L2', 'L3'];
 
-    if (ENERGY_MEASURANDS.has(measurand) && out.energyWh === undefined) {
-      out.energyWh = toWh(num, sv.unit);
-    } else if (measurand === 'Power.Active.Import' && out.powerW === undefined) {
-      out.powerW = toW(num, sv.unit);
-    } else if (measurand === 'SoC' && out.socPercent === undefined) {
-      out.socPercent = num;
-    }
+/**
+ * The station total for one measurand. Stations often list per-phase values
+ * (L1/L2/L3, L1-N…) next to — or before — the total, so a value with a phase
+ * is never taken as the total. Without a total, the three phases are summed.
+ */
+function total(
+  values: MeterValueEntry['sampledValue'],
+  measurand: string,
+  convert: (value: number, unit?: string) => number,
+): number | undefined {
+  const matching = values.filter(
+    (sv) => (sv.measurand ?? 'Energy.Active.Import.Register') === measurand && Number.isFinite(Number(sv.value)),
+  );
+  const whole = matching.find((sv) => !sv.phase);
+  if (whole) return convert(Number(whole.value), whole.unit);
+  const perPhase = PHASES.map((p) => matching.find((sv) => sv.phase === p || sv.phase === `${p}-N`));
+  if (perPhase.every(Boolean)) {
+    return perPhase.reduce((sum, sv) => sum + convert(Number(sv!.value), sv!.unit), 0);
   }
-  return out;
+  return undefined;
+}
+
+function extract(entry: MeterValueEntry): Extracted {
+  return {
+    // Only the cumulative register says where the meter stands; an Interval
+    // sample is a delta and would rewind the session's energy.
+    energyWh: total(entry.sampledValue, 'Energy.Active.Import.Register', toWh),
+    powerW: total(entry.sampledValue, 'Power.Active.Import', toW),
+    socPercent: entry.sampledValue
+      .filter((sv) => sv.measurand === 'SoC' && Number.isFinite(Number(sv.value)))
+      .map((sv) => Number(sv.value))[0],
+  };
 }
 
 /**

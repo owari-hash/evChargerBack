@@ -8,6 +8,7 @@ export type CsmsEventName =
   | 'connector.status'
   | 'transaction.started'
   | 'transaction.stopped'
+  | 'transaction.refunded'
   | 'transaction.metervalue'
   | 'security.event'
   | 'firmware.status'

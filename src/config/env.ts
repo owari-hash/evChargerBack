@@ -152,6 +152,14 @@ const schema = z.object({
   /** How long a freshly created invoice stays payable, in minutes. */
   QPAY_INVOICE_TTL_MINUTES: int(30),
 
+  // ---------- Platform fee ----------
+  /**
+   * Eplug's service fee, as a percentage added on top of the energy cost
+   * (1,000₮ at 5% → the driver pays 1,050₮). A client or a station can
+   * override it; this is the default for everything else.
+   */
+  PLATFORM_FEE_PERCENT: z.coerce.number().min(0).max(100).default(0),
+
   // ---------- Prepaid wallets ----------
   /** Master switch for /api/wallets, session debiting and Authorize pre-checks. */
   WALLET_ENABLED: bool(true),

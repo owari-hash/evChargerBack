@@ -2,11 +2,44 @@ import { Transaction, type TransactionDoc } from '../models/Transaction';
 import { Payment, type PaymentDoc } from '../models/Payment';
 import { EbarimtMerchant, ensureDefaultEbarimtMerchant } from '../models/EbarimtMerchant';
 import { ebarimtLogger } from '../lib/logger';
+import { ChargePoint } from '../models/ChargePoint';
+import { Client } from '../models/Client';
+import { HttpError, badRequest, notFound } from '../lib/errors';
 
 export interface IssueEBarimtOptions {
   type?: 'B2C_RECEIPT' | 'B2B_RECEIPT';
   customerTin?: string;
   customerNo?: string;
+}
+
+/** A receipt the PosAPI did not issue. Nothing fake is ever stored in its place. */
+export class ReceiptError extends Error {}
+
+/**
+ * POST a receipt to the PosAPI. Resolves only for a receipt the PosAPI actually
+ * issued (2xx with an id); anything else throws, so callers record a failure
+ * instead of a made-up receipt id and lottery number.
+ */
+async function postReceipt(baseUrl: string, payload: unknown): Promise<Record<string, any>> {
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl}/rest/receipt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (err) {
+    throw new ReceiptError(`PosAPI unreachable: ${(err as Error).message}`);
+  }
+  const data = (await res.json().catch(() => ({}))) as Record<string, any>;
+  if (!res.ok) {
+    throw new ReceiptError(`PosAPI HTTP ${res.status}: ${String(data?.message ?? data?.error ?? '').slice(0, 200)}`);
+  }
+  if (!(data?.id || data?.receiptId)) {
+    throw new ReceiptError('PosAPI answered without a receipt id');
+  }
+  return data;
 }
 
 export function calculateVat(amount: number): number {
@@ -15,23 +48,119 @@ export function calculateVat(amount: number): number {
   return Math.round(vat * 100) / 100;
 }
 
+/**
+ * The merchant a station's receipts belong to: the station's own setting, else
+ * its client's. Null means "use the network default". A configured merchant
+ * that is missing or disabled is an error, never a silent fallback — that would
+ * put the client's sale on someone else's tax number.
+ */
+async function merchantForTransaction(tx: TransactionDoc) {
+  const cp = await ChargePoint.findById(tx.chargePointId).select('ebarimtMerchantId clientId').lean();
+  // The client snapshotted at start owns the sale; null means it had none.
+  // Only sessions recorded before the snapshot existed use the station's client.
+  const clientId = tx.clientId !== undefined ? tx.clientId : cp?.clientId;
+  const client = clientId ? await Client.findById(clientId).select('ebarimtMerchantId name').lean() : null;
+  const merchantId = cp?.ebarimtMerchantId ?? client?.ebarimtMerchantId;
+  if (!merchantId) return null;
+  const merchant = await EbarimtMerchant.findOne({ _id: merchantId, enabled: true }).lean();
+  if (!merchant) {
+    throw new HttpError(
+      409,
+      `${client?.name ?? 'Станц'}-ын е-баримтын мерчант идэвхгүй эсвэл устсан байна. Админ тохиргоог шалгана уу.`,
+    );
+  }
+  return merchant;
+}
+
+interface ReceiptLine {
+  name: string;
+  unit: string;
+  qty: number;
+  unitPrice: number;
+  amount: number;
+  vat: number;
+}
+
+/**
+ * Receipt items. With a service fee the energy and the fee are separate lines
+ * whose amounts add up exactly to the receipt total.
+ */
+function receiptLines(tx: TransactionDoc, total: number): ReceiptLine[] {
+  const kwh = (tx.energyWh ?? 0) / 1000 || 1;
+  const fee = tx.feeAmount ?? 0;
+  if (!(fee > 0) || tx.energyCost == null) {
+    return [
+      {
+        name: 'EV Цэнэглэлтийн үйлчилгээ',
+        unit: 'кВт·ц',
+        qty: kwh,
+        unitPrice: tx.tariffPerKwh ?? 500,
+        amount: total,
+        vat: calculateVat(total),
+      },
+    ];
+  }
+  const energy = Math.round(tx.energyCost * 100) / 100;
+  const feeLine = Math.round((total - energy) * 100) / 100;
+  return [
+    {
+      name: 'EV Цэнэглэлтийн үйлчилгээ',
+      unit: 'кВт·ц',
+      qty: kwh,
+      unitPrice: tx.tariffPerKwh ?? energy / kwh,
+      amount: energy,
+      vat: calculateVat(energy),
+    },
+    {
+      name: `Үйлчилгээний хураамж (${tx.feePercent ?? 0}%)`,
+      unit: 'ш',
+      qty: 1,
+      unitPrice: feeLine,
+      amount: feeLine,
+      vat: calculateVat(feeLine),
+    },
+  ];
+}
+
 export async function issueEBarimtForTransaction(
   transactionId: number,
   options: IssueEBarimtOptions = {},
 ): Promise<TransactionDoc> {
   const tx = await Transaction.findById(transactionId);
-  if (!tx) {
-    throw new Error(`Transaction #${transactionId} not found`);
+  if (!tx) throw notFound(`Transaction #${transactionId} not found`);
+  if (tx.status === 'Refunded') {
+    throw badRequest('Буцаалт хийгдсэн цэнэглэлтэд е-баримт олгохгүй');
+  }
+  if (tx.status !== 'Completed' || !(tx.cost && tx.cost > 0)) {
+    throw badRequest('Төлбөртэй, дууссан цэнэглэлтэд л е-баримт олгоно');
   }
 
-  const amount = tx.cost && tx.cost > 0 ? tx.cost : Math.round(((tx.energyWh ?? 0) / 1000) * (tx.tariffPerKwh ?? 500));
-  const finalAmount = Math.max(1, amount);
-  const totalVAT = calculateVat(finalAmount);
+  // One receipt per sale. Asking again for the same receipt returns it; asking
+  // for a different one (B2C → B2B, another TIN) returns the old one at the
+  // PosAPI first, so the sale is never receipted twice.
+  const existing = tx.ebarimt;
+  if (existing?.status === 'SUCCESS' && !isLocalOnlyReceipt(existing)) {
+    const wantB2B = options.type === 'B2B_RECEIPT' || Boolean(options.customerTin);
+    const sameReceipt =
+      (existing.type === 'B2B_RECEIPT') === wantB2B &&
+      (!wantB2B || existing.customerTin === options.customerTin);
+    if (sameReceipt) return tx;
+    await returnEBarimtForTransaction(tx);
+  }
+
+  const finalAmount = tx.cost;
+  const lines = receiptLines(tx, finalAmount);
+  const totalVAT = Math.round(lines.reduce((sum, l) => sum + l.vat, 0) * 100) / 100;
 
   const isB2B = options.type === 'B2B_RECEIPT' || Boolean(options.customerTin);
   const receiptType: 'B2C_RECEIPT' | 'B2B_RECEIPT' = isB2B ? 'B2B_RECEIPT' : 'B2C_RECEIPT';
 
-  let activeMerchant = await EbarimtMerchant.findOne({ isDefault: true, enabled: true }).lean().catch(() => null);
+  // The station's (or its client's) own merchant issues the receipt — the
+  // money is theirs. Only stations with neither use the network default.
+  let activeMerchant = await merchantForTransaction(tx);
+  if (!activeMerchant) {
+    activeMerchant = await EbarimtMerchant.findOne({ isDefault: true, enabled: true }).lean().catch(() => null);
+  }
   if (!activeMerchant) {
     await ensureDefaultEbarimtMerchant();
     activeMerchant = await EbarimtMerchant.findOne({ isDefault: true, enabled: true }).lean().catch(() => null);
@@ -63,19 +192,17 @@ export async function issueEBarimtForTransaction(
         totalCityTax: '0.00',
         taxType: 'VAT_ABLE',
         merchantTin,
-        items: [
-          {
-            name: 'EV Цэнэглэлтийн үйлчилгээ',
-            barCodeType: 'UNDEFINED',
-            classificationCode: '5312909',
-            measureUnit: 'кВт·ц',
-            qty: (((tx.energyWh ?? 0) / 1000) || 1).toFixed(2),
-            unitPrice: (tx.tariffPerKwh ?? 500).toFixed(2),
-            totalVat: totalVAT.toFixed(2),
-            totalCityTax: '0.00',
-            totalAmount: finalAmount.toFixed(2),
-          },
-        ],
+        items: lines.map((l) => ({
+          name: l.name,
+          barCodeType: 'UNDEFINED',
+          classificationCode: '5312909',
+          measureUnit: l.unit,
+          qty: l.qty.toFixed(2),
+          unitPrice: l.unitPrice.toFixed(2),
+          totalVat: l.vat.toFixed(2),
+          totalCityTax: '0.00',
+          totalAmount: l.amount.toFixed(2),
+        })),
       },
     ],
     payments: [
@@ -88,28 +215,14 @@ export async function issueEBarimtForTransaction(
   };
 
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
-
-    const res = await fetch(`${baseUrl}/rest/receipt`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-
-    const data = (await res.json().catch(() => ({}))) as Record<string, any>;
-
-    const receiptId = String(data?.id || data?.receiptId || `REC-${Date.now()}`);
-    const qrData = String(data?.qrData || data?.qr || data?.qrCode || `https://ebarimt.mn/qr/${receiptId}`);
-    const lottery = String(data?.lottery || data?.lotteryNo || `EB${Math.floor(10000000 + Math.random() * 90000000)}`);
-
+    const data = await postReceipt(baseUrl, payload);
+    const receiptId = String(data.id || data.receiptId);
     const ebarimtData = {
       receiptId,
       type: receiptType,
-      qrData,
-      lottery,
+      qrData: data.qrData || data.qr || data.qrCode || undefined,
+      // B2B receipts carry no lottery; never invent one.
+      lottery: data.lottery || data.lotteryNo || undefined,
       merchantTin,
       customerNo: payload.customerNo,
       customerTin: isB2B ? options.customerTin : undefined,
@@ -119,39 +232,32 @@ export async function issueEBarimtForTransaction(
       issuedAt: new Date(),
       rawResponse: data,
     };
-
     await Transaction.updateOne({ _id: transactionId }, { $set: { ebarimt: ebarimtData } });
     tx.ebarimt = ebarimtData;
     ebarimtLogger.info(
-      { transactionId, receiptId, lottery, qrData, amount: finalAmount, rawResponse: data },
-      '🧾 [E-BARIMT] Transaction receipt issued successfully',
+      { transactionId, receiptId, amount: finalAmount, merchantTin },
+      '🧾 [E-BARIMT] Transaction receipt issued',
     );
     return tx;
-  } catch (err: any) {
-    ebarimtLogger.error({ transactionId, err: err?.message || err }, '❌ [E-BARIMT] Call failed, generating fallback receipt');
-    // Fallback formatted mock data when offline or testing
-    const fallbackData = {
-      receiptId: `MOCK-${Date.now()}`,
-      type: receiptType,
-      qrData: `https://ebarimt.mn/qr/${Date.now()}`,
-      lottery: `EB${Math.floor(10000000 + Math.random() * 90000000)}`,
-      merchantTin,
-      customerNo: payload.customerNo,
-      customerTin: isB2B ? options.customerTin : undefined,
-      totalAmount: finalAmount,
-      totalVAT,
-      status: 'SUCCESS' as const,
-      issuedAt: new Date(),
-      error: err?.message,
-    };
-
-    await Transaction.updateOne({ _id: transactionId }, { $set: { ebarimt: fallbackData } });
-    tx.ebarimt = fallbackData;
-    ebarimtLogger.info(
-      { transactionId, receiptId: fallbackData.receiptId, lottery: fallbackData.lottery, amount: finalAmount },
-      '🧾 [E-BARIMT] Fallback transaction receipt issued',
+  } catch (err) {
+    const message = (err as Error).message;
+    ebarimtLogger.error({ transactionId, err: message }, '❌ [E-BARIMT] Transaction receipt failed');
+    await Transaction.updateOne(
+      { _id: transactionId },
+      {
+        $set: {
+          ebarimt: {
+            type: receiptType,
+            merchantTin,
+            totalAmount: finalAmount,
+            totalVAT,
+            status: 'FAILED',
+            error: message,
+          },
+        },
+      },
     );
-    return tx;
+    throw new HttpError(502, 'Е-баримт олгож чадсангүй. Түр хүлээгээд дахин оролдоно уу.');
   }
 }
 
@@ -225,28 +331,13 @@ export async function issueEBarimtForPayment(
   };
 
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
-
-    const res = await fetch(`${baseUrl}/rest/receipt`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-
-    const data = (await res.json().catch(() => ({}))) as Record<string, any>;
-
-    const receiptId = String(data?.id || data?.receiptId || `REC-${Date.now()}`);
-    const qrData = String(data?.qrData || data?.qr || data?.qrCode || `https://ebarimt.mn/qr/${receiptId}`);
-    const lottery = String(data?.lottery || data?.lotteryNo || `EB${Math.floor(10000000 + Math.random() * 90000000)}`);
-
+    const data = await postReceipt(baseUrl, payload);
+    const receiptId = String(data.id || data.receiptId);
     const ebarimtData = {
       receiptId,
       type: receiptType,
-      qrData,
-      lottery,
+      qrData: data.qrData || data.qr || data.qrCode || undefined,
+      lottery: data.lottery || data.lotteryNo || undefined,
       merchantTin,
       customerNo: payload.customerNo,
       customerTin: isB2B ? options.customerTin : undefined,
@@ -256,38 +347,25 @@ export async function issueEBarimtForPayment(
       issuedAt: new Date(),
       rawResponse: data,
     };
-
     await Payment.updateOne({ _id: payment._id }, { $set: { ebarimt: ebarimtData } });
     payment.ebarimt = ebarimtData;
     ebarimtLogger.info(
-      { paymentId: String(payment._id), receiptId, lottery, qrData, amount: finalAmount, rawResponse: data },
-      '🧾 [E-BARIMT] Payment receipt issued successfully',
+      { paymentId: String(payment._id), receiptId, amount: finalAmount },
+      '🧾 [E-BARIMT] Payment receipt issued',
     );
     return payment;
-  } catch (err: any) {
-    ebarimtLogger.error({ paymentId: String(payment._id), err: err?.message || err }, '❌ [E-BARIMT] Payment call failed, generating fallback receipt');
-    const fallbackData = {
-      receiptId: `MOCK-${Date.now()}`,
-      type: receiptType,
-      qrData: `https://ebarimt.mn/qr/${Date.now()}`,
-      lottery: `EB${Math.floor(10000000 + Math.random() * 90000000)}`,
-      merchantTin,
-      customerNo: payload.customerNo,
-      customerTin: isB2B ? options.customerTin : undefined,
-      totalAmount: finalAmount,
-      totalVAT,
-      status: 'SUCCESS' as const,
-      issuedAt: new Date(),
-      error: err?.message,
-    };
-
-    await Payment.updateOne({ _id: payment._id }, { $set: { ebarimt: fallbackData } });
-    payment.ebarimt = fallbackData;
-    ebarimtLogger.info(
-      { paymentId: String(payment._id), receiptId: fallbackData.receiptId, lottery: fallbackData.lottery, amount: finalAmount },
-      '🧾 [E-BARIMT] Fallback payment receipt issued',
+  } catch (err) {
+    const message = (err as Error).message;
+    ebarimtLogger.error({ paymentId: String(payment._id), err: message }, '❌ [E-BARIMT] Payment receipt failed');
+    await Payment.updateOne(
+      { _id: payment._id },
+      {
+        $set: {
+          ebarimt: { type: receiptType, merchantTin, totalAmount: finalAmount, totalVAT, status: 'FAILED', error: message },
+        },
+      },
     );
-    return payment;
+    throw err;
   }
 }
 
@@ -383,3 +461,92 @@ export async function checkEbarimtMerchant(merchantId: string) {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// Буцаалт — returning (cancelling) a receipt at the PosAPI
+// ---------------------------------------------------------------------------
+
+/** Receipts written by the fallback paths above never reached the PosAPI. */
+function isLocalOnlyReceipt(e: { receiptId?: string | null; error?: string | null }): boolean {
+  const id = e.receiptId ?? '';
+  return !id || id.startsWith('MOCK-') || id.startsWith('REC-') || Boolean(e.error);
+}
+
+/** PosAPI 3.0 wants the receipt's own date, `yyyy-MM-dd HH:mm:ss`, Ulaanbaatar time. */
+function posApiDate(e: { issuedAt?: Date | null; rawResponse?: unknown }): string {
+  const raw = (e.rawResponse as { date?: unknown } | undefined)?.date;
+  if (typeof raw === 'string' && raw) return raw;
+  const at = new Date((e.issuedAt ?? new Date()).getTime() + 8 * 3600_000);
+  return at.toISOString().replace('T', ' ').slice(0, 19);
+}
+
+/**
+ * Return the e-barimt receipt of a transaction (PosAPI 3.0 `DELETE /rest/receipt`)
+ * and mark it REFUNDED. A receipt that never reached the PosAPI is only marked.
+ * Throws a 502 when the PosAPI refuses or cannot be reached, so the caller can
+ * stop before any money moves.
+ */
+export async function returnEBarimtForTransaction(
+  tx: TransactionDoc,
+): Promise<{ returned: boolean }> {
+  const e = tx.ebarimt;
+  // Nothing was issued (none requested, or the PosAPI call failed): nothing to return.
+  if (!e?.receiptId || e.status !== 'SUCCESS') return { returned: false };
+
+  // A fake receipt left by the old fallback code never reached the PosAPI.
+  if (isLocalOnlyReceipt(e)) {
+    await Transaction.updateOne(
+      { _id: tx._id },
+      {
+        $set: {
+          'ebarimt.status': 'REFUNDED',
+          'ebarimt.returnedAt': new Date(),
+          'ebarimt.returnResponse': { skipped: 'receipt was never registered at the PosAPI' },
+        },
+      },
+    );
+    return { returned: false };
+  }
+
+  const merchant =
+    (await EbarimtMerchant.findOne({ merchantTin: e.merchantTin, enabled: true }).lean().catch(() => null)) ??
+    (await EbarimtMerchant.findOne({ isDefault: true, enabled: true }).lean().catch(() => null));
+  const rawUrl =
+    merchant?.envMode === 'TEST'
+      ? merchant.testApiUrl || process.env.EBARIMTSHINE_TEST
+      : merchant?.prodApiUrl || merchant?.ebarimtApiUrl || process.env.EBARIMTSHINE_IP;
+  if (!rawUrl) throw new HttpError(502, 'Е-баримтын PosAPI хаяг тохируулаагүй байна');
+  const baseUrl = rawUrl.replace(/\/+$/, '');
+
+  const body = { id: e.receiptId, date: posApiDate(e) };
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl}/rest/receipt`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (err) {
+    ebarimtLogger.error({ transactionId: tx._id, err: (err as Error).message }, 'e-barimt return: PosAPI unreachable');
+    throw new HttpError(502, 'Е-баримтын системтэй холбогдож чадсангүй. Буцаалт хийгдээгүй.');
+  }
+  const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!res.ok) {
+    ebarimtLogger.error({ transactionId: tx._id, status: res.status, data }, 'e-barimt return refused by PosAPI');
+    throw new HttpError(502, `Е-баримт буцаахад PosAPI алдаа өглөө (HTTP ${res.status}). Буцаалт хийгдээгүй.`, data);
+  }
+
+  await Transaction.updateOne(
+    { _id: tx._id },
+    {
+      $set: {
+        'ebarimt.status': 'REFUNDED',
+        'ebarimt.returnedAt': new Date(),
+        'ebarimt.returnResponse': data,
+      },
+    },
+  );
+  ebarimtLogger.info({ transactionId: tx._id, receiptId: e.receiptId }, 'e-barimt receipt returned');
+  return { returned: true };
+}

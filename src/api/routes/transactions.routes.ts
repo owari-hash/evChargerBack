@@ -6,12 +6,14 @@ import { MeterValue } from '../../models/MeterValue';
 import { Transaction } from '../../models/Transaction';
 import { TRANSACTION_STATUSES } from '../../models/enums';
 import { connectionManager } from '../../ocpp/manager';
-import { stopTransaction } from '../../services/transaction.service';
+import { closeFromLastMeter } from '../../services/transaction.service';
+import { refundTransaction } from '../../services/refund.service';
 import { issueEBarimtForTransaction } from '../../services/ebarimt.service';
 import {
   asyncHandler,
   paginate,
   paginationSchema,
+  requireAdmin,
   requireAuth,
   requireOperator,
   validate,
@@ -143,14 +145,11 @@ transactionsRouter.post(
     if (!tx) throw notFound('Transaction not found');
 
     const cp = await requireChargePoint(String(tx.chargePointId));
-    await stopTransaction({
-      chargePointId: tx.chargePointId,
-      cpId: cp.cpId,
-      transactionId: tx._id,
-      meterStop: body.meterStop ?? tx.lastMeterWh ?? tx.meterStart,
-      timestamp: new Date(),
-      reason: 'Other',
-    });
+    // Closed from the last known meter; if the station still sends its own
+    // StopTransaction later, the bill is corrected to the real reading.
+    if (tx.status === 'Active') {
+      await closeFromLastMeter(tx, cp.cpId, 'Other', body.meterStop ?? undefined);
+    }
 
     res.json((await Transaction.findById(tx._id))?.toJSON());
   }),
@@ -164,10 +163,33 @@ const ebarimtSchema = z.object({
 
 transactionsRouter.post(
   '/:id/ebarimt',
+  requireOperator,
   validate(ebarimtSchema),
   asyncHandler(async (req, res) => {
     const body = req.body as z.infer<typeof ebarimtSchema>;
     const tx = await issueEBarimtForTransaction(Number(req.params.id), body);
+    res.json(tx.toJSON());
+  }),
+);
+
+/**
+ * Буцаалт — refund a completed session to the driver's wallet and return its
+ * e-barimt receipt. Admin only: it moves money.
+ */
+const refundSchema = z.object({
+  reason: z.string().trim().min(1, 'Буцаалтын шалтгаан оруулна уу').max(255),
+});
+
+transactionsRouter.post(
+  '/:id/refund',
+  requireAdmin,
+  validate(refundSchema),
+  asyncHandler(async (req, res) => {
+    const body = req.body as z.infer<typeof refundSchema>;
+    const tx = await refundTransaction(Number(req.params.id), {
+      reason: body.reason,
+      refundedBy: req.user?.email ?? 'admin',
+    });
     res.json(tx.toJSON());
   }),
 );

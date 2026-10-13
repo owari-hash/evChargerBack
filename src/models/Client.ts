@@ -10,6 +10,18 @@ const clientSchema = new Schema(
     address: { type: String, trim: true },
     description: { type: String, trim: true },
     isActive: { type: Boolean, default: true, index: true },
+
+    /** Eplug's service fee on this client's stations. Unset = network default. */
+    feePercent: { type: Number, min: 0, max: 100 },
+    /** Receipts for sessions at this client's stations are issued under this merchant's TIN. */
+    ebarimtMerchantId: { type: Schema.Types.ObjectId, ref: 'EbarimtMerchant' },
+    /** Where Eplug pays the client's earnings out to. */
+    payoutAccount: {
+      bankCode: { type: String, trim: true },
+      bankName: { type: String, trim: true },
+      accountNumber: { type: String, trim: true },
+      accountName: { type: String, trim: true },
+    },
   },
   {
     timestamps: true,

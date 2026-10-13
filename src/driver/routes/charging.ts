@@ -183,8 +183,16 @@ const ebarimtSchema = z.object({
 sessionRoutes.post(
   '/:id/ebarimt',
   route(async (req) => {
-    await requireUser(req);
+    const user = await requireUser(req);
     const transactionId = transactionIdOf(req.params.id, 'Гүйлгээний дугаар буруу байна');
+
+    // Only the driver who charged may have the receipt — it carries their
+    // money and can be issued to a company TIN.
+    const owned = await getTransaction(transactionId);
+    if (!owned) throw notFound('Тухайн цэнэглэлтийг олсонгүй');
+    if (!user.idTag || user.idTag !== owned.idTag) {
+      throw forbidden('Энэ цэнэглэлт өөр бүртгэлд хамаарна');
+    }
 
     const parsed = ebarimtSchema.safeParse(req.body ?? {});
     if (!parsed.success) throw badRequest('Тэмдэглэсэн талбаруудаа шалгана уу');
