@@ -17,6 +17,21 @@ export const CONNECTOR_STATUSES = [
 ] as const;
 export type ConnectorStatus = (typeof CONNECTOR_STATUSES)[number];
 
+/**
+ * Physical plug standards. OCPP 1.6 never reports these, so they are set by an
+ * operator when the connector is registered — which is also what the driver app
+ * shows on a station card.
+ */
+export const CONNECTOR_TYPES = [
+  'Type2',
+  'CCS2',
+  'CHAdeMO',
+  'GBT',
+  'Type1',
+  'Schuko',
+] as const;
+export type ConnectorType = (typeof CONNECTOR_TYPES)[number];
+
 export const CHARGE_POINT_ERROR_CODES = [
   'ConnectorLockFailure',
   'EVCommunicationError',

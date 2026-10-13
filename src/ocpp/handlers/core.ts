@@ -16,6 +16,7 @@ import {
 } from '../../services/transaction.service';
 import type * as core from '../schemas/core';
 import type { ChargePointConnection } from '../connection';
+import { ensureConnectorCode } from '../../services/connector.service';
 
 type Req<T extends z.ZodTypeAny> = z.output<T>;
 
@@ -43,6 +44,26 @@ export async function onBootNotification(
     },
     { new: true },
   );
+
+  // The pile connects as one serial and reports another: nearly always a config
+  // cloned to a second unit whose URL was never changed. Left undetected, both
+  // units share a record, overwrite each other's connectors, and bill the wrong
+  // pile — so it is recorded and logged loudly rather than quietly tolerated.
+  const reported = payload.chargePointSerialNumber?.trim();
+  if (reported && cp && reported !== cp.cpId) {
+    ocppLogger.error(
+      { cp: conn.cpId, connectedAs: cp.cpId, reportedSerial: reported },
+      'charge point serial does not match the identity it connected with',
+    );
+    await ChargePoint.findByIdAndUpdate(conn.ref, {
+      $set: { serialMismatch: { reportedSerial: reported, detectedAt: new Date() } },
+    }).catch(() => undefined);
+  } else if (cp?.serialMismatch?.reportedSerial) {
+    // Resolved; stop warning about it.
+    await ChargePoint.findByIdAndUpdate(conn.ref, {
+      $unset: { serialMismatch: '' },
+    }).catch(() => undefined);
+  }
 
   const status = cp?.registrationStatus ?? 'Accepted';
   const interval = cp?.heartbeatInterval || env.OCPP_HEARTBEAT_INTERVAL;
@@ -160,6 +181,14 @@ export async function onStatusNotification(
   );
 
   if (payload.connectorId > 0) {
+    // A connector registered by hand before the station came online already has
+    // its code, and this leaves it alone — the sticker is on the charger. Only
+    // a gun the station reported first gets a fresh one.
+    await ensureConnectorCode(conn.ref, payload.connectorId).catch((err: unknown) => {
+      ocppLogger.warn({ err, cp: conn.cpId, connectorId: payload.connectorId }, 'code mint skipped');
+      return null;
+    });
+
     const count = await Connector.countDocuments({
       chargePointId: conn.ref,
       connectorId: { $gt: 0 },

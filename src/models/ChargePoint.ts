@@ -11,6 +11,13 @@ const chargePointSchema = new Schema(
       */
     cpId: { type: String, required: true, unique: true, index: true },
 
+    /**
+     * Path segments the station sent before its identity, e.g. "Baganuur" in
+     * /ocpp/Baganuur/6632010600015961. Recorded as a location hint; the pile
+     * serial is the identity, so moving a unit to another site keeps its history.
+     */
+    sitePath: { type: String, trim: true },
+
     name: { type: String },
     description: { type: String },
 
@@ -24,6 +31,16 @@ const chargePointSchema = new Schema(
     imsi: { type: String },
     meterType: { type: String },
     meterSerialNumber: { type: String },
+
+    /**
+     * Set when the serial a pile reports in BootNotification disagrees with the
+     * one it connects as. Almost always a cloned config: two units sharing a
+     * URL silently merge into one record and bill to the wrong pile.
+     */
+    serialMismatch: {
+      reportedSerial: { type: String },
+      detectedAt: { type: Date },
+    },
 
     // Registration / security
     registrationStatus: { type: String, enum: REGISTRATION_STATUSES, default: 'Accepted' },

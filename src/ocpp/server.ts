@@ -23,16 +23,62 @@ interface AuthResult {
   securityEvent?: string;
 }
 
-function parseChargePointId(url: string | undefined): string | null {
+export interface ParsedConnectPath {
+  /** The charge point identity: the last path segment. */
+  cpId: string;
+  /** Anything before it, e.g. "Baganuur" in /ocpp/Baganuur/6632010600015961. */
+  sitePath: string | null;
+}
+
+/**
+ * Reads the identity out of an OCPP connect URL.
+ *
+ * Vendors differ on how many path segments they put after the prefix. A single
+ * segment is the common case:
+ *
+ *   /ocpp/CP-001                        -> cpId "CP-001"
+ *
+ * but some hardware prefixes a site, with the pile serial last:
+ *
+ *   /ocpp/Baganuur/6632010600015961     -> cpId "6632010600015961",
+ *                                          sitePath "Baganuur"
+ *
+ * The LAST segment is the identity, because that is the serial the pile is
+ * physically stamped with — it stays the same if the unit is moved to another
+ * site, whereas the site segment does not. This previously took the FIRST
+ * segment, which made every pile on a site collide into one record.
+ */
+export function parseConnectPath(url: string | undefined): ParsedConnectPath | null {
   if (!url) return null;
   const path = url.split('?')[0]!;
   const prefix = env.OCPP_PATH_PREFIX.replace(/\/$/, '');
   if (prefix && !path.startsWith(prefix + '/')) return null;
+
   const rest = prefix ? path.slice(prefix.length + 1) : path.replace(/^\//, '');
-  const id = decodeURIComponent(rest.split('/')[0] ?? '');
-  // Charge point identities are used as document ids; keep them tame.
-  if (!id || id.length > 64 || !/^[\w.:@-]+$/.test(id)) return null;
-  return id;
+  const segments = rest
+    .split('/')
+    .map((segment) => decodeURIComponent(segment).trim())
+    .filter(Boolean);
+  if (segments.length === 0) return null;
+
+  // `.` and `..` are never a real site or serial. They are only stored today,
+  // but a traversal sequence sitting in the database waiting for someone to
+  // build a path out of it is not a trade worth making.
+  if (segments.some((segment) => segment === '.' || segment === '..')) return null;
+
+  const cpId = segments[segments.length - 1]!;
+  // Charge point identities end up in log lines and auth comparisons; keep them tame.
+  if (cpId.length > 64 || !/^[\w.:@-]+$/.test(cpId)) return null;
+
+  const site = segments.slice(0, -1).join('/');
+  if (site.length > 128 || (site && !/^[\w.:@/-]+$/.test(site))) return null;
+
+  return { cpId, sitePath: site || null };
+}
+
+/** Back-compat helper for callers that only need the identity. */
+function parseChargePointId(url: string | undefined): string | null {
+  return parseConnectPath(url)?.cpId ?? null;
 }
 
 function parseBasicAuth(header: string | undefined): { user: string; pass: string } | null {
@@ -138,8 +184,9 @@ export function attachOcppServer(server: HttpServer): WebSocketServer {
 
   server.on('upgrade', (req, socket, head) => {
     void (async () => {
-      const chargePointId = parseChargePointId(req.url);
-      if (!chargePointId) {
+      const parsed = parseConnectPath(req.url);
+      const chargePointId = parsed?.cpId ?? null;
+      if (!parsed || !chargePointId) {
         // Not an OCPP path; let other upgrade handlers (if any) deal with it.
         rejectUpgrade(socket, 404, 'Not Found');
         return;
@@ -178,7 +225,7 @@ export function attachOcppServer(server: HttpServer): WebSocketServer {
       }
 
       wss.handleUpgrade(req, socket, head, (ws) => {
-        onConnection(ws, req, chargePointId);
+        onConnection(ws, req, chargePointId, parsed.sitePath);
       });
     })();
   });
@@ -190,6 +237,7 @@ async function onConnection(
   ws: WebSocket,
   req: IncomingMessage,
   cpId: string,
+  sitePath: string | null,
 ): Promise<void> {
   // A station sends BootNotification the moment the socket opens, before the
   // row lookup below resolves and the connection attaches its own handler.
@@ -215,6 +263,8 @@ async function onConnection(
         remoteAddress,
         ocppProtocol: ws.protocol || SUBPROTOCOL,
         disconnectedAt: null,
+        // Kept current: a pile re-homed to another site says so on reconnect.
+        ...(sitePath ? { sitePath } : {}),
       },
       $setOnInsert: {
         cpId,

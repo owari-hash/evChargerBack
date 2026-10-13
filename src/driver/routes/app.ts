@@ -1,8 +1,11 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { decideUpdate } from '../../lib/appVersion';
+import { normalizeConnectorCode } from '../../lib/connectorCode';
 import { AppRelease, APP_PLATFORMS } from '../../models/AppRelease';
-import { guard, HOUR, parseQuery, route } from '../http';
+import { ChargePoint } from '../../models/ChargePoint';
+import { Connector } from '../../models/Connector';
+import { guard, HOUR, notFound, parseQuery, route } from '../http';
 
 export const appRoutes = Router();
 
@@ -61,6 +64,44 @@ appRoutes.get(
       storeUrl: release.storeUrl,
       releaseNotes: release.releaseNotesMn ?? '',
       releaseNotesEn: release.releaseNotesEn ?? '',
+    };
+  }),
+);
+
+const codeParam = z.object({ code: z.string().trim().min(1).max(16) });
+
+/**
+ * GET /app-api/app/connector/:code
+ *
+ * Resolves the short code printed on a connector's QR sticker to the station
+ * and gun it belongs to. Unauthenticated: a driver scans this before signing
+ * in, and the page it lands on is what invites them to.
+ */
+appRoutes.get(
+  '/connector/:code',
+  route(async (req) => {
+    guard(req, 'connector-code', 120, HOUR);
+
+    const parsed = codeParam.safeParse(req.params);
+    const code = parsed.success ? normalizeConnectorCode(parsed.data.code) : null;
+    if (!code) throw notFound('Энэ код олдсонгүй');
+
+    const connector = await Connector.findOne({ code }).lean();
+    if (!connector) throw notFound('Энэ код олдсонгүй');
+
+    const cp = await ChargePoint.findById(connector.chargePointId).lean();
+    if (!cp) throw notFound('Энэ код олдсонгүй');
+
+    return {
+      code,
+      stationId: String(cp._id),
+      cpId: cp.cpId,
+      stationName: cp.name?.trim() || cp.cpId,
+      address: cp.address ?? null,
+      connectorId: connector.connectorId,
+      connectorType: connector.connectorType ?? null,
+      powerKw: connector.powerKw ?? null,
+      label: connector.label ?? null,
     };
   }),
 );
