@@ -65,11 +65,11 @@ chargePointsRouter.get(
     ]);
 
     const ids = items.map((c) => c._id);
-    const clientIds = items.map((c) => c.clientId).filter(Boolean);
+    const allClientIds = items.flatMap((c) => [c.clientId, ...(c.linkedClientIds ?? [])]).filter(Boolean);
     const [connectors, clients] = await Promise.all([
       Connector.find({ chargePointId: { $in: ids } }).lean(),
-      clientIds.length > 0
-        ? Client.find({ _id: { $in: clientIds } }).select('_id name businessRegister').lean()
+      allClientIds.length > 0
+        ? Client.find({ _id: { $in: allClientIds } }).select('_id name businessRegister').lean()
         : [],
     ]);
 
@@ -87,6 +87,10 @@ chargePointsRouter.get(
       id: String(cp._id),
       clientId: cp.clientId ? String(cp.clientId) : null,
       client: cp.clientId ? clientMap.get(String(cp.clientId)) ?? null : null,
+      linkedClientIds: (cp.linkedClientIds ?? []).map((id) => String(id)),
+      linkedClients: (cp.linkedClientIds ?? [])
+        .map((id) => clientMap.get(String(id)))
+        .filter((c): c is { id: string; name: string; businessRegister?: string } => Boolean(c)),
       // The registry is keyed by the OCPP identifier the station connects with.
       isOnline: connectionManager.isOnline(cp.cpId),
       connectors: connectors
@@ -104,6 +108,8 @@ const createSchema = z.object({
   name: z.string().optional(),
   description: z.string().optional(),
   clientId: z.string().nullable().optional(),
+  /** Other clients this station should also show up for, beyond the owner. */
+  linkedClientIds: z.array(z.string()).optional(),
   /**
    * Omitted generates one. Explicit null means the station authenticates with
    * no HTTP Basic credentials — which is how most hardware ships, and what
@@ -142,6 +148,7 @@ chargePointsRouter.post(
       if (!clientExists) throw badRequest('Client not found');
       clientId = body.clientId;
     }
+    await assertClientRefs(body.linkedClientIds);
 
     // Explicit null: no credentials at all, for a station that sends none.
     // Omitted: generate one satisfying A00.FR.205 (>= 16 bytes, hex, <= 40 chars).
@@ -156,6 +163,7 @@ chargePointsRouter.post(
       name: body.name,
       description: body.description,
       clientId,
+      linkedClientIds: body.linkedClientIds ?? [],
       authorizationKeyHash: authorizationKey
         ? await bcrypt.hash(authorizationKey, 12)
         : undefined,
@@ -177,18 +185,17 @@ chargePointsRouter.post(
       { upsert: true },
     );
 
-    let client: { id: string; name: string; businessRegister?: string } | null = null;
-    if (cp.clientId) {
-      const cl = await Client.findById(cp.clientId).select('_id name businessRegister').lean();
-      if (cl) {
-        client = { id: String(cl._id), name: cl.name, businessRegister: cl.businessRegister ?? undefined };
-      }
-    }
+    const [client, linkedClients] = await Promise.all([
+      clientSummary(cp.clientId),
+      clientSummaries(cp.linkedClientIds),
+    ]);
 
     res.status(201).json({
       ...cp.toJSON(),
       clientId: cp.clientId ? String(cp.clientId) : null,
       client,
+      linkedClientIds: (cp.linkedClientIds ?? []).map((id) => String(id)),
+      linkedClients,
       // Shown once; store it in the charge point's AuthorizationKey config key.
       // Null when the station was registered without credentials.
       authorizationKey,
@@ -202,18 +209,21 @@ chargePointsRouter.get(
     // Callers may hold either identifier, so both resolve.
     const cp = (await requireChargePoint(req.params.id!)).toJSON();
 
-    const [connectors, activeTransactions, configuration, client] = await Promise.all([
+    const [connectors, activeTransactions, configuration, client, linkedClients] = await Promise.all([
       Connector.find({ chargePointId: cp._id }).sort({ connectorId: 1 }).lean(),
       Transaction.find({ chargePointId: cp._id, status: 'Active' }).lean(),
       ConfigurationKey.find({ chargePointId: cp._id }).sort({ key: 1 }).lean(),
-      cp.clientId ? Client.findById(cp.clientId).select('_id name businessRegister').lean() : null,
+      clientSummary(cp.clientId),
+      clientSummaries(cp.linkedClientIds),
     ]);
 
     res.json({
       ...cp,
       id: String(cp._id),
       clientId: cp.clientId ? String(cp.clientId) : null,
-      client: client ? { id: String(client._id), name: client.name, businessRegister: client.businessRegister ?? undefined } : null,
+      client,
+      linkedClientIds: (cp.linkedClientIds ?? []).map((id: unknown) => String(id)),
+      linkedClients,
       isOnline: connectionManager.isOnline(cp.cpId),
       // `.lean()` bypasses the toJSON transform that would add `id`, so it is
       // added here: without it the console cannot address a connector to edit.
@@ -242,6 +252,7 @@ const updateSchema = createSchema.partial().omit({ id: true }).extend({
   name: z.string().nullable().optional(),
   description: z.string().nullable().optional(),
   clientId: z.string().nullable().optional(),
+  linkedClientIds: z.array(z.string()).nullable().optional(),
   address: z.string().nullable().optional(),
   latitude: z.number().min(-90).max(90).nullable().optional(),
   longitude: z.number().min(-180).max(180).nullable().optional(),
@@ -256,6 +267,35 @@ async function assertEbarimtMerchant(id: string | null | undefined): Promise<voi
   if (!isValidObjectId(id) || !(await EbarimtMerchant.exists({ _id: id }))) {
     throw badRequest('E-barimt merchant not found');
   }
+}
+
+type ClientSummary = { id: string; name: string; businessRegister?: string };
+
+/** Every id in the list must point at a real client. */
+async function assertClientRefs(ids: string[] | null | undefined): Promise<void> {
+  if (!ids || ids.length === 0) return;
+  for (const id of ids) {
+    if (!isValidObjectId(id)) throw badRequest('Invalid linkedClientIds entry');
+  }
+  const count = await Client.countDocuments({ _id: { $in: ids } });
+  if (count !== new Set(ids).size) throw badRequest('One or more linked clients not found');
+}
+
+async function clientSummary(id: unknown): Promise<ClientSummary | null> {
+  if (!id) return null;
+  const cl = await Client.findById(id).select('_id name businessRegister').lean();
+  if (!cl) return null;
+  return { id: String(cl._id), name: cl.name, businessRegister: cl.businessRegister ?? undefined };
+}
+
+async function clientSummaries(ids: unknown[] | null | undefined): Promise<ClientSummary[]> {
+  if (!ids || ids.length === 0) return [];
+  const found = await Client.find({ _id: { $in: ids } }).select('_id name businessRegister').lean();
+  return found.map((cl) => ({
+    id: String(cl._id),
+    name: cl.name,
+    businessRegister: cl.businessRegister ?? undefined,
+  }));
 }
 
 chargePointsRouter.patch(
@@ -290,8 +330,17 @@ chargePointsRouter.patch(
       }
     }
 
+    if (body.linkedClientIds !== undefined) {
+      if (body.linkedClientIds === null || body.linkedClientIds.length === 0) {
+        $set.linkedClientIds = [];
+      } else {
+        await assertClientRefs(body.linkedClientIds);
+        $set.linkedClientIds = body.linkedClientIds;
+      }
+    }
+
     for (const [key, value] of Object.entries(body)) {
-      if (key === 'authorizationKey' || key === 'clientId') continue;
+      if (key === 'authorizationKey' || key === 'clientId' || key === 'linkedClientIds') continue;
       if (value === null) $unset[key] = '';
       else $set[key] = value;
     }
@@ -316,18 +365,17 @@ chargePointsRouter.patch(
     const updated = await ChargePoint.findByIdAndUpdate(cp._id, update, { new: true });
     if (!updated) throw notFound('Charge point not found');
 
-    let client: { id: string; name: string; businessRegister?: string } | null = null;
-    if (updated.clientId) {
-      const cl = await Client.findById(updated.clientId).select('_id name businessRegister').lean();
-      if (cl) {
-        client = { id: String(cl._id), name: cl.name, businessRegister: cl.businessRegister ?? undefined };
-      }
-    }
+    const [client, linkedClients] = await Promise.all([
+      clientSummary(updated.clientId),
+      clientSummaries(updated.linkedClientIds),
+    ]);
 
     res.json({
       ...updated.toJSON(),
       clientId: updated.clientId ? String(updated.clientId) : null,
       client,
+      linkedClientIds: (updated.linkedClientIds ?? []).map((id) => String(id)),
+      linkedClients,
       ...(newKey ? { authorizationKey: newKey } : {}),
     });
   }),

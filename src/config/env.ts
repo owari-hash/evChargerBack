@@ -201,6 +201,18 @@ const schema = z.object({
   /** Development only: SMS codes and email links come back in API responses. */
   DEV_EXPOSE_TOKENS: bool(true),
 
+  // ---------- AI assistant (/app-api/assistant) — kiosk + app chat widget ----------
+  /** Google Gemini — tried first when set (has a free tier). */
+  GEMINI_API_KEY: optRaw,
+  /** Anthropic Claude — used only when GEMINI_API_KEY is unset. */
+  ANTHROPIC_API_KEY: optRaw,
+  /** Overrides the default model for whichever provider is active. */
+  ASSISTANT_MODEL: opt,
+  /** Gemini only: lighter model to fall back to under load or once quota runs out. */
+  ASSISTANT_FALLBACK_MODEL: text('gemini-flash-lite-latest'),
+  /** Requests per driver (or IP, signed out) per 10 minutes. */
+  ASSISTANT_RATE_LIMIT: int(30),
+
   EMAIL_PROVIDER: text('console'),
   EMAIL_FROM: text('Zevtabs <no-reply@example.com>'),
   SMTP_HOST: opt,

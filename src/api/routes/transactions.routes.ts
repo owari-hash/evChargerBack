@@ -9,6 +9,7 @@ import { connectionManager } from '../../ocpp/manager';
 import { closeFromLastMeter } from '../../services/transaction.service';
 import { refundTransaction } from '../../services/refund.service';
 import { issueEBarimtForTransaction } from '../../services/ebarimt.service';
+import { store } from '../../driver/store';
 import {
   asyncHandler,
   paginate,
@@ -21,6 +22,24 @@ import {
 
 export const transactionsRouter = Router();
 transactionsRouter.use(requireAuth);
+
+/** What the console shows for who was actually charging — name/phone and the
+ * one vehicle on their account, looked up from the bare `idTag` on the log. */
+type DriverSummary = { name?: string; phone?: string; vehicleBrand?: string; vehicleModel?: string };
+
+function toDriverSummary(user: {
+  name?: string;
+  phone?: string;
+  vehicleBrand?: string;
+  vehicleModel?: string;
+}): DriverSummary {
+  return {
+    name: user.name,
+    phone: user.phone,
+    vehicleBrand: user.vehicleBrand,
+    vehicleModel: user.vehicleModel,
+  };
+}
 
 const listQuery = paginationSchema.extend({
   chargePointId: z.string().optional(),
@@ -54,8 +73,18 @@ transactionsRouter.get(
       Transaction.countDocuments(filter),
     ]);
 
+    const driversByIdTag = await store.findUsersByIdTags(data.map((t) => t.idTag));
+
     res.json({
-      data: data.map((t) => ({ ...t, transactionId: t._id, id: t._id })),
+      data: data.map((t) => {
+        const driver = driversByIdTag.get(t.idTag);
+        return {
+          ...t,
+          transactionId: t._id,
+          id: t._id,
+          driver: driver ? toDriverSummary(driver) : null,
+        };
+      }),
       total,
       page: q.page,
       limit: q.limit,
@@ -67,7 +96,13 @@ transactionsRouter.get(
   '/active',
   asyncHandler(async (_req, res) => {
     const data = await Transaction.find({ status: 'Active' }).sort({ startTimestamp: -1 }).lean();
-    res.json(data.map((t) => ({ ...t, transactionId: t._id, id: t._id })));
+    const driversByIdTag = await store.findUsersByIdTags(data.map((t) => t.idTag));
+    res.json(
+      data.map((t) => {
+        const driver = driversByIdTag.get(t.idTag);
+        return { ...t, transactionId: t._id, id: t._id, driver: driver ? toDriverSummary(driver) : null };
+      }),
+    );
   }),
 );
 
@@ -76,7 +111,13 @@ transactionsRouter.get(
   asyncHandler(async (req, res) => {
     const tx = await Transaction.findById(Number(req.params.id)).lean();
     if (!tx) throw notFound('Transaction not found');
-    res.json({ ...tx, transactionId: tx._id, id: tx._id });
+    const driver = await store.findUserByIdTag(tx.idTag);
+    res.json({
+      ...tx,
+      transactionId: tx._id,
+      id: tx._id,
+      driver: driver ? toDriverSummary(driver) : null,
+    });
   }),
 );
 

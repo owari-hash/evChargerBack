@@ -63,6 +63,15 @@ const chargePointSchema = new Schema(
 
     // Site metadata
     clientId: { type: Schema.Types.ObjectId, ref: 'Client', default: null, index: true },
+    /**
+     * Other clients this station is also visible to, beyond the owner above.
+     * Lets a shared site show up on several clients' station lists and feed
+     * several clients' internal-member (free-charging) allow-lists, without
+     * disturbing `clientId` — which stays the single source for fee and
+     * e-barimt-merchant inheritance, since those cannot sensibly fork across
+     * several owners.
+     */
+    linkedClientIds: { type: [{ type: Schema.Types.ObjectId, ref: 'Client' }], default: [] },
     latitude: { type: Number },
     longitude: { type: Number },
     address: { type: String },

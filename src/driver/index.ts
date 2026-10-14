@@ -3,6 +3,7 @@ import { sessionSecret } from './config';
 import { driverErrorHandler, driverLogger } from './http';
 import { accountRoutes } from './routes/account';
 import { appRoutes } from './routes/app';
+import { assistantRouter } from './routes/assistant';
 import { authRoutes } from './routes/auth';
 import { sessionRoutes, stationRoutes, walletRoutes } from './routes/charging';
 
@@ -36,6 +37,7 @@ export function createDriverRouter(): Router {
   router.use('/stations', stationRoutes);
   router.use('/sessions', sessionRoutes);
   router.use('/wallet', walletRoutes);
+  router.use('/assistant', assistantRouter);
 
   router.use((_req, res) => {
     res.status(404).json({ error: 'Хүсэлт олдсонгүй' });

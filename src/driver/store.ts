@@ -290,6 +290,30 @@ export const store = {
     return doc ? toUser(doc) : null;
   },
 
+  /**
+   * The account a charge tag belongs to — how the CSMS console shows which
+   * driver and vehicle a transaction's bare `idTag` actually was.
+   */
+  async findUserByIdTag(idTag: string): Promise<StoredUser | null> {
+    await ready();
+    const doc = await DriverUser.findOne({ idTag }).lean<DriverUserDoc>();
+    return doc ? toUser(doc) : null;
+  },
+
+  /** As `findUserByIdTag`, batched for a transaction list — one query, not one per row. */
+  async findUsersByIdTags(idTags: string[]): Promise<Map<string, StoredUser>> {
+    await ready();
+    const unique = [...new Set(idTags)];
+    if (unique.length === 0) return new Map();
+    const docs = await DriverUser.find({ idTag: { $in: unique } }).lean<DriverUserDoc[]>();
+    const map = new Map<string, StoredUser>();
+    for (const doc of docs) {
+      const user = toUser(doc);
+      if (user.idTag) map.set(user.idTag, user);
+    }
+    return map;
+  },
+
   async createUser(input: NewUser): Promise<StoredUser> {
     await ready();
     const doc = await DriverUser.create({

@@ -80,11 +80,23 @@ clientsRouter.get(
       Client.countDocuments(filter),
     ]);
 
-    // Count stations per client in this batch
+    // Count stations per client in this batch — a station counts for its
+    // owner (clientId) and for every client it is additionally linked to.
     const clientIds = clients.map((c) => c._id);
     const stationCounts = await ChargePoint.aggregate<{ _id: Types.ObjectId; count: number }>([
-      { $match: { clientId: { $in: clientIds } } },
-      { $group: { _id: '$clientId', count: { $sum: 1 } } },
+      {
+        $project: {
+          allClientIds: {
+            $setUnion: [
+              { $cond: [{ $ifNull: ['$clientId', false] }, ['$clientId'], []] },
+              { $ifNull: ['$linkedClientIds', []] },
+            ],
+          },
+        },
+      },
+      { $unwind: '$allClientIds' },
+      { $match: { allClientIds: { $in: clientIds } } },
+      { $group: { _id: '$allClientIds', count: { $sum: 1 } } },
     ]);
 
     const countMap = new Map<string, number>();
@@ -111,13 +123,20 @@ clientsRouter.get(
     const client = await Client.findById(id).lean();
     if (!client) throw notFound('Client not found');
 
-    const stations = await ChargePoint.find({ clientId: client._id }).sort({ cpId: 1 }).lean();
+    // Owned stations and stations merely linked (visible/usable but billed to
+    // their own owner) both belong on this client's page — `owned` says which.
+    const stations = await ChargePoint.find({
+      $or: [{ clientId: client._id }, { linkedClientIds: client._id }],
+    })
+      .sort({ cpId: 1 })
+      .lean();
     const stationIds = stations.map((s) => s._id);
     const connectors = await Connector.find({ chargePointId: { $in: stationIds } }).lean();
 
     const populatedStations = stations.map((cp) => ({
       ...cp,
       id: String(cp._id),
+      owned: String(cp.clientId ?? '') === String(client._id),
       isOnline: connectionManager.isOnline(cp.cpId),
       connectors: connectors
         .filter((c) => String(c.chargePointId) === String(cp._id))
@@ -211,8 +230,14 @@ clientsRouter.delete(
     const client = await Client.findByIdAndDelete(id);
     if (!client) throw notFound('Client not found');
 
-    // Unlink any charge points associated with this client
-    await ChargePoint.updateMany({ clientId: client._id }, { $set: { clientId: null } });
+    // Unlink any charge points associated with this client, owned or merely linked
+    await Promise.all([
+      ChargePoint.updateMany({ clientId: client._id }, { $set: { clientId: null } }),
+      ChargePoint.updateMany(
+        { linkedClientIds: client._id },
+        { $pull: { linkedClientIds: client._id } },
+      ),
+    ]);
 
     res.status(204).end();
   }),
@@ -224,13 +249,18 @@ clientsRouter.get(
     const { id } = req.params;
     if (!isValidObjectId(id)) throw badRequest('Invalid client id');
 
-    const stations = await ChargePoint.find({ clientId: id }).sort({ cpId: 1 }).lean();
+    const stations = await ChargePoint.find({
+      $or: [{ clientId: id }, { linkedClientIds: id }],
+    })
+      .sort({ cpId: 1 })
+      .lean();
     const stationIds = stations.map((s) => s._id);
     const connectors = await Connector.find({ chargePointId: { $in: stationIds } }).lean();
 
     const data = stations.map((cp) => ({
       ...cp,
       id: String(cp._id),
+      owned: String(cp.clientId ?? '') === String(id),
       isOnline: connectionManager.isOnline(cp.cpId),
       connectors: connectors
         .filter((c) => String(c.chargePointId) === String(cp._id))
