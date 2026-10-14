@@ -11,6 +11,7 @@ const idTagSchema = new Schema(
     label: { type: String },
     ownerName: { type: String },
     ownerEmail: { type: String },
+    ownerPhone: { type: String, index: true, sparse: true },
     // How many transactions this tag may have running at once (0 = unlimited)
     maxActiveTransactions: { type: Number, default: 1 },
     // Optional whitelist: if non-empty the tag is only valid at these charge points

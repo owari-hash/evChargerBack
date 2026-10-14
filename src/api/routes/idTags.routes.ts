@@ -1,10 +1,13 @@
 import { Router } from 'express';
+import { isValidObjectId } from 'mongoose';
 import { chargePointRefs, optionalChargePointRef } from '../../lib/chargePointRef';
 import { z } from 'zod';
-import { conflict, notFound } from '../../lib/errors';
+import { badRequest, conflict, notFound } from '../../lib/errors';
 import { IdTag, LocalAuthListEntry } from '../../models/IdTag';
 import { Transaction } from '../../models/Transaction';
+import { Client } from '../../models/Client';
 import { AUTHORIZATION_STATUSES } from '../../models/enums';
+import { WALLET_OWNER_TYPES } from '../../models/Wallet';
 import { authorizeIdTag } from '../../services/authorization.service';
 import {
   asyncHandler,
@@ -21,7 +24,27 @@ idTagsRouter.use(requireAuth);
 const listQuery = paginationSchema.extend({
   search: z.string().optional(),
   status: z.enum(AUTHORIZATION_STATUSES).optional(),
+  walletOwnerType: z.enum(WALLET_OWNER_TYPES).optional(),
+  walletOwnerId: z.string().optional(),
 });
+
+/**
+ * Validates that a `walletOwnerType`/`walletOwnerId` pair, if present, points at
+ * a real owner. Only `CLIENT` has a collection to check against here — a
+ * `CLIENT` wallet owner is always a `Client` id, the "дотоод бүртгэл" member
+ * cards that charge for free at that client's own stations.
+ */
+async function assertWalletOwner(
+  ownerType?: string | null,
+  ownerId?: string | null,
+): Promise<void> {
+  if (!ownerType || !ownerId) return;
+  if (ownerType === 'CLIENT') {
+    if (!isValidObjectId(ownerId) || !(await Client.exists({ _id: ownerId }))) {
+      throw badRequest('walletOwnerId must reference an existing client');
+    }
+  }
+}
 
 idTagsRouter.get(
   '/',
@@ -30,12 +53,15 @@ idTagsRouter.get(
     const q = req.query as unknown as z.infer<typeof listQuery>;
     const filter: Record<string, unknown> = {};
     if (q.status) filter.status = q.status;
+    if (q.walletOwnerType) filter.walletOwnerType = q.walletOwnerType;
+    if (q.walletOwnerId) filter.walletOwnerId = q.walletOwnerId;
     if (q.search) {
       filter.$or = [
         { _id: { $regex: q.search, $options: 'i' } },
         { label: { $regex: q.search, $options: 'i' } },
         { ownerName: { $regex: q.search, $options: 'i' } },
         { ownerEmail: { $regex: q.search, $options: 'i' } },
+        { ownerPhone: { $regex: q.search, $options: 'i' } },
       ];
     }
     const { skip, limit } = paginate(q);
@@ -60,9 +86,12 @@ const createSchema = z.object({
   label: z.string().optional(),
   ownerName: z.string().optional(),
   ownerEmail: z.string().email().optional(),
+  ownerPhone: z.string().optional(),
   maxActiveTransactions: z.number().int().min(0).default(1),
   allowedChargePointIds: z.array(z.string()).optional(),
   note: z.string().optional(),
+  walletOwnerType: z.enum(WALLET_OWNER_TYPES).nullable().optional(),
+  walletOwnerId: z.string().nullable().optional(),
 });
 
 idTagsRouter.post(
@@ -74,13 +103,15 @@ idTagsRouter.post(
     if (await IdTag.exists({ _id: body.idTag })) {
       throw conflict(`idTag "${body.idTag}" already exists`);
     }
-    const { idTag, allowedChargePointIds, ...rest } = body;
+    await assertWalletOwner(body.walletOwnerType, body.walletOwnerId);
+    const { idTag, allowedChargePointIds, walletOwnerType, walletOwnerId, ...rest } = body;
     const doc = await IdTag.create({
       _id: idTag,
       ...rest,
       ...(allowedChargePointIds
         ? { allowedChargePointIds: await chargePointRefs(allowedChargePointIds) }
         : {}),
+      ...(walletOwnerType ? { walletOwnerType, walletOwnerId } : {}),
     });
     res.status(201).json(doc.toJSON());
   }),
@@ -107,14 +138,24 @@ idTagsRouter.patch(
   validate(updateSchema),
   asyncHandler(async (req, res) => {
     const body = req.body as z.infer<typeof updateSchema>;
+    await assertWalletOwner(body.walletOwnerType, body.walletOwnerId);
+    const { allowedChargePointIds, walletOwnerType, walletOwnerId, ...rest } = body;
+    const $set: Record<string, unknown> = { ...rest };
+    const $unset: Record<string, ''> = {};
+    if (allowedChargePointIds) $set.allowedChargePointIds = await chargePointRefs(allowedChargePointIds);
+    // Detaching from an organisation (unticking it in the admin UI) sends
+    // `null` for both — the only way to clear a CLIENT wallet link back to
+    // "this card pays for itself" rather than leaving the old client set.
+    if (walletOwnerType === null) {
+      $unset.walletOwnerType = '';
+      $unset.walletOwnerId = '';
+    } else if (walletOwnerType !== undefined) {
+      $set.walletOwnerType = walletOwnerType;
+      $set.walletOwnerId = walletOwnerId;
+    }
     const tag = await IdTag.findByIdAndUpdate(
       req.params.idTag,
-      {
-        ...body,
-        ...(body.allowedChargePointIds
-          ? { allowedChargePointIds: await chargePointRefs(body.allowedChargePointIds) }
-          : {}),
-      },
+      { $set, ...(Object.keys($unset).length ? { $unset } : {}) },
       { new: true },
     );
     if (!tag) throw notFound('idTag not found');

@@ -48,8 +48,8 @@ function normaliseAmount(amount: number, field = 'amount'): number {
 
 export function normaliseOwner(ownerType: string, ownerId: string): WalletOwner {
   const type = ownerType.toUpperCase();
-  if (type !== 'USER' && type !== 'IDTAG') {
-    throw badRequest("ownerType must be 'USER' or 'IDTAG'");
+  if (type !== 'USER' && type !== 'IDTAG' && type !== 'CLIENT') {
+    throw badRequest("ownerType must be 'USER', 'IDTAG', or 'CLIENT'");
   }
   const id = ownerId.trim();
   if (!id) throw badRequest('ownerId is required');
@@ -514,6 +514,10 @@ export async function hasBalanceToStart(idTag: string): Promise<{
   const owner = await resolveWalletOwnerForIdTag(idTag);
   if (!owner) return { ok: false, balance: 0, required };
   const balance = await balanceOf(owner);
+  // A CLIENT wallet is an organisation's internal member card (replacing a
+  // broken RFID fleet) — it charges for free and is never blocked on balance,
+  // even though usage still debits the wallet for the client's own records.
+  if (owner.ownerType === 'CLIENT') return { ok: true, balance, required };
   return { ok: balance >= required, balance, required };
 }
 

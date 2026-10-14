@@ -72,6 +72,7 @@ async function register(idTag: string, user: StoredUser): Promise<void> {
       label: user.name || user.phone || user.email,
       ownerEmail: user.email,
       ownerName: user.name,
+      ownerPhone: user.phone,
       // One car at a time per driver; a second simultaneous charge is refused.
       maxActiveTransactions: 1,
       // Empty allow-list: valid at every station on the network.

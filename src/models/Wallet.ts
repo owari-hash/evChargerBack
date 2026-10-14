@@ -7,13 +7,16 @@ import { Schema, model, type InferSchemaType, type HydratedDocument } from 'mong
  * front ends: `IDTAG` wallets are keyed by the RFID card presented at a charger
  * (no account needed), `USER` wallets by a driver account in the web app. An
  * idTag can point at a user's wallet via `IdTag.walletOwner*`, which is how one
- * balance ends up covering every card a driver owns.
+ * balance ends up covering every card a driver owns. `CLIENT` wallets belong to
+ * an organisation (see `Client`); an idTag pointed at one is an internal member
+ * card that charges for free — `authorizeIdTag` skips the balance gate for it
+ * entirely rather than ever debiting the client's wallet to zero.
  *
  * Money is stored as whole tugrik. MNT has no subunits in practice and QPay only
  * ever settles integers, so there is nothing to lose and no float to round.
  */
 
-export const WALLET_OWNER_TYPES = ['USER', 'IDTAG'] as const;
+export const WALLET_OWNER_TYPES = ['USER', 'IDTAG', 'CLIENT'] as const;
 export type WalletOwnerType = (typeof WALLET_OWNER_TYPES)[number];
 
 export const WALLET_STATUSES = ['ACTIVE', 'FROZEN'] as const;
