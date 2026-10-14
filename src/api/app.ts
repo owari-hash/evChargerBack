@@ -6,9 +6,11 @@ import pinoHttp from 'pino-http';
 import { apiUrl, env, ocppUrl } from '../config/env';
 import { createDriverRouter } from '../driver';
 import { apiLogger } from '../lib/logger';
+import { UPLOADS_ROOT, UPLOADS_URL_PREFIX } from '../lib/uploads';
 import { connectionManager } from '../ocpp/manager';
 import { SUPPORTED_ACTIONS } from '../ocpp/schemas';
 import { errorHandler, notFoundHandler } from './middleware';
+import { announcementsRouter } from './routes/announcements.routes';
 import { authRouter } from './routes/auth.routes';
 import { chargePointsRouter } from './routes/chargePoints.routes';
 import { commandsRouter } from './routes/commands.routes';
@@ -55,6 +57,10 @@ export function createApp(): Express {
   // Driver API for the kiosk web app and the Flutter app. Mounted before the
   // app-wide JSON parser because it parses its own bodies (see createDriverRouter).
   app.use(env.DRIVER_API_BASE_PATH, createDriverRouter());
+
+  // Uploaded images (announcements today), served straight off disk — no CDN
+  // in front of this yet, so nginx/this process is where the bytes come from.
+  app.use(UPLOADS_URL_PREFIX, express.static(UPLOADS_ROOT));
 
   app.use(express.json({ limit: '2mb' }));
 
@@ -106,6 +112,7 @@ export function createApp(): Express {
         qpayCallback: `${base}/payments/callback/:paymentId/:secret`,
         quickQr: `${base}/qpay`,
         appReleases: `${base}/app-releases`,
+        announcements: `${base}/announcements`,
         stats: `${base}/stats`,
         eventStream: `${base}/events/stream`,
       },
@@ -130,6 +137,7 @@ export function createApp(): Express {
   api.use('/ebarimt-merchants', ebarimtMerchantsRouter);
   api.use('/app-releases', appReleasesRouter);
   api.use('/clients', clientsRouter);
+  api.use('/announcements', announcementsRouter);
   // Mounted at the API root: it owns both /charge-points/:id/connectors and /connectors/:id.
   api.use('/', connectorAdminRouter);
   api.use('/settlements', settlementsRouter);

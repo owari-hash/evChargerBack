@@ -2,12 +2,42 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { decideUpdate } from '../../lib/appVersion';
 import { normalizeConnectorCode } from '../../lib/connectorCode';
+import { Announcement } from '../../models/Announcement';
 import { AppRelease, APP_PLATFORMS } from '../../models/AppRelease';
 import { ChargePoint } from '../../models/ChargePoint';
 import { Connector } from '../../models/Connector';
 import { guard, HOUR, notFound, parseQuery, route } from '../http';
 
 export const appRoutes = Router();
+
+/**
+ * GET /app-api/app/announcements
+ *
+ * The last few active Мэдээ, newest first — the kiosk and the app show the
+ * newest one a signed-in driver has not dismissed yet as a modal, then keep
+ * the rest around so the notification bell has something to list. Public
+ * like the other driver-shell endpoints; the client decides whether to
+ * actually show anything based on its own sign-in state.
+ */
+appRoutes.get(
+  '/announcements',
+  route(async (req) => {
+    guard(req, 'announcements', 60, HOUR);
+    const rows = await Announcement.find({ isActive: true })
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .lean();
+    return {
+      announcements: rows.map((a) => ({
+        id: String(a._id),
+        title: a.title,
+        body: a.body,
+        imageUrl: a.imageUrl ?? null,
+        createdAt: a.createdAt,
+      })),
+    };
+  }),
+);
 
 const checkQuery = z.object({
   platform: z.enum(APP_PLATFORMS),
