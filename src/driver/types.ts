@@ -114,6 +114,8 @@ export interface PublicUser {
   idTag?: string;
   vehicleBrand?: string;
   vehicleModel?: string;
+  /** First-run guides still to show this driver: 'app' and/or 'web'. */
+  pendingGuides: string[];
   locale: string;
   createdAt: string;
   lastLoginAt?: string;

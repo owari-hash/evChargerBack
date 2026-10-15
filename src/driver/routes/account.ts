@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { clearedPinLock, hashPin, verifyPin } from '../auth/pin';
 import { requireUser, setSessionCookie, toPublicUser } from '../auth/session';
 import { badRequest, conflict, guard, HOUR, notFound, parseBody, route } from '../http';
-import { store, type StoredUser } from '../store';
+import { DRIVER_GUIDES, store, type DriverGuide, type StoredUser } from '../store';
 import { changePinSchema, normalizePhone, updateProfileSchema } from '../validation';
 
 export const accountRoutes = Router();
@@ -21,6 +21,30 @@ accountRoutes.delete(
     });
     if (!updated) throw notFound(ACCOUNT_NOT_FOUND);
     return { ok: true, message: 'Бүртгэл амжилттай устгагдлаа' };
+  }),
+);
+
+/**
+ * The driver finished (or skipped) the first-run guide on one surface. Idempotent:
+ * marking a guide that is already done just returns the account.
+ */
+accountRoutes.post(
+  '/guides/:surface/done',
+  route(async (req) => {
+    const user = await requireUser(req);
+    const surface = req.params.surface as DriverGuide;
+    if (!DRIVER_GUIDES.includes(surface)) {
+      throw badRequest('Тодорхойгүй заавар', { surface: 'app эсвэл web байх ёстой' });
+    }
+    const pending = (user.pendingGuides ?? []).filter((g) => g !== surface);
+    if (pending.length === (user.pendingGuides ?? []).length) {
+      return { ok: true, user: toPublicUser(user) };
+    }
+    const updated = await store.updateUser(user.id, {
+      pendingGuides: pending.length ? pending : undefined,
+    });
+    if (!updated) throw notFound(ACCOUNT_NOT_FOUND);
+    return { ok: true, user: toPublicUser(updated) };
   }),
 );
 

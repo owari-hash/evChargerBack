@@ -10,6 +10,10 @@ const userSchema = new Schema(
     role: { type: String, enum: USER_ROLES, default: 'VIEWER', index: true },
     isActive: { type: Boolean, default: true },
     lastLoginAt: { type: Date },
+    // True until a new operator finishes (or skips) the admin console's
+    // first-run guide. Set only when an account is created, so operators from
+    // before the guide existed never see it.
+    guidePending: { type: Boolean },
   },
   {
     timestamps: true,

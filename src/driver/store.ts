@@ -30,6 +30,12 @@ export interface StoredUser {
   /** The vehicle this driver charges — shown on an active session, not OCPP data. */
   vehicleBrand?: string;
   vehicleModel?: string;
+  /**
+   * First-run guides this driver has not finished yet, per surface (see
+   * DRIVER_GUIDES). Set on new accounts only — accounts from before the guides
+   * existed have none, so existing drivers are never shown one.
+   */
+  pendingGuides?: string[];
   locale: string;
   /** Bumped on PIN reset or change so existing session cookies stop validating. */
   tokenVersion: number;
@@ -55,6 +61,10 @@ export interface StoredToken {
   usedAt?: string;
   createdAt: string;
 }
+
+/** The surfaces with a first-run guide: the mobile app and the website. */
+export const DRIVER_GUIDES = ['app', 'web'] as const;
+export type DriverGuide = (typeof DRIVER_GUIDES)[number];
 
 export interface NewUser {
   email?: string;
@@ -89,6 +99,8 @@ const driverUserSchema = new Schema(
     idTag: { type: String, index: true, sparse: true },
     vehicleBrand: { type: String, trim: true },
     vehicleModel: { type: String, trim: true },
+    // No default: documents written before the guides existed stay without it.
+    pendingGuides: { type: [String], default: undefined },
     locale: { type: String, default: 'en' },
     tokenVersion: { type: Number, default: 0 },
     lastLoginAt: { type: Date },
@@ -131,6 +143,7 @@ verificationTokenSchema.index({ userId: 1, kind: 1, usedAt: 1 });
 
 interface DriverUserDoc {
   _id: unknown;
+  pendingGuides?: string[];
   email?: string;
   phone?: string;
   name?: string;
@@ -189,6 +202,7 @@ function toUser(doc: DriverUserDoc): StoredUser {
     idTag: doc.idTag ?? undefined,
     vehicleBrand: doc.vehicleBrand || undefined,
     vehicleModel: doc.vehicleModel || undefined,
+    pendingGuides: doc.pendingGuides?.length ? [...doc.pendingGuides] : undefined,
     locale: doc.locale ?? 'en',
     tokenVersion: doc.tokenVersion ?? 0,
     createdAt: doc.createdAt?.toISOString() ?? new Date().toISOString(),
@@ -323,6 +337,8 @@ export const store = {
       name: input.name,
       pinHash: input.pinHash,
       locale: input.locale ?? 'en',
+      // A brand-new driver: every first-run guide is still to be shown.
+      pendingGuides: [...DRIVER_GUIDES],
     });
     return toUser(doc.toObject() as unknown as DriverUserDoc);
   },

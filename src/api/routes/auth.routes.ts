@@ -49,6 +49,21 @@ authRouter.get(
   }),
 );
 
+/** The operator finished (or skipped) the first-run guide. Idempotent. */
+authRouter.post(
+  '/me/guide-done',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const user = await User.findByIdAndUpdate(
+      req.user!.id,
+      { $unset: { guidePending: 1 } },
+      { new: true },
+    );
+    if (!user) throw notFound('User not found');
+    res.json(user.toJSON());
+  }),
+);
+
 authRouter.delete(
   '/me',
   requireAuth,
@@ -81,6 +96,7 @@ authRouter.post(
       passwordHash: await hashPassword(body.password),
       name: body.name,
       role: body.role,
+      guidePending: true,
     });
     res.status(201).json(user.toJSON());
   }),

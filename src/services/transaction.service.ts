@@ -7,6 +7,7 @@ import { Reservation } from '../models/Reservation';
 import { Transaction, type TransactionDoc } from '../models/Transaction';
 import type { StopReason } from '../models/enums';
 import type { IdTagInfo, MeterValueEntry } from '../ocpp/schemas/common';
+import { store } from '../driver/store';
 import { bus } from '../realtime/events';
 import { authorizeIdTag, canStopTransaction } from './authorization.service';
 import { storeMeterValues } from './meter.service';
@@ -111,13 +112,20 @@ export async function startTransaction(
       }).catch(() => undefined);
     }
 
-    bus.emitEvent('transaction.started', input.cpId, {
+    // The driver's name is for the console's live notifications only. Looked up
+    // off the OCPP path, so StartTransaction.conf is never held up by it.
+    const started = {
       transactionId,
       connectorId: input.connectorId,
       idTag: input.idTag,
       meterStart: input.meterStart,
       timestamp: input.timestamp,
-    });
+    };
+    void store
+      .findUserByIdTag(input.idTag)
+      .then((driver) => driver?.name?.trim() || undefined)
+      .catch(() => undefined)
+      .then((driverName) => bus.emitEvent('transaction.started', input.cpId, { ...started, driverName }));
   }
 
   return { transactionId, idTagInfo };
@@ -243,6 +251,11 @@ export async function closeFromLastMeter(
 
   bus.emitEvent('transaction.stopped', cpId, {
     transactionId: tx._id,
+    connectorId: tx.connectorId,
+    idTag: tx.idTag,
+    meterStop,
+    energyWh: tx.energyWh,
+    cost: tx.cost,
     reason,
     orphaned: true,
   });

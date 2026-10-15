@@ -122,6 +122,7 @@ export function toPublicUser(user: StoredUser): PublicUser {
     idTag: user.idTag,
     vehicleBrand: user.vehicleBrand,
     vehicleModel: user.vehicleModel,
+    pendingGuides: user.pendingGuides ?? [],
     locale: user.locale ?? 'en',
     createdAt: user.createdAt,
     lastLoginAt: user.lastLoginAt,
