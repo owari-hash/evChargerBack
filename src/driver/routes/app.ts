@@ -22,7 +22,10 @@ export const appRoutes = Router();
 appRoutes.get(
   '/announcements',
   route(async (req) => {
-    guard(req, 'announcements', 60, HOUR);
+    // The app re-checks on every resume and every few minutes in the
+    // foreground, and drivers on one carrier share an address behind NAT, so
+    // 60 an hour per IP starved them. It is a small read of ten rows at most.
+    guard(req, 'announcements', 600, HOUR);
     const rows = await Announcement.find({ isActive: true })
       .sort({ createdAt: -1 })
       .limit(10)
