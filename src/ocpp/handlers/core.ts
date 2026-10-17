@@ -240,12 +240,104 @@ export async function onDataTransfer(
   conn: ChargePointConnection,
 ) {
   ocppLogger.info(
-    { cp: conn.cpId, vendorId: payload.vendorId, messageId: payload.messageId },
+    {
+      cp: conn.cpId,
+      vendorId: payload.vendorId,
+      messageId: payload.messageId,
+      data: payload.data,
+    },
     'DataTransfer received',
   );
   await touch(conn.ref);
-  // No vendor extensions are implemented; report the vendor as unknown per §4.3.
-  return { status: 'UnknownVendorId' as const };
+
+  let parsed: Record<string, unknown> | null = null;
+  if (payload.data) {
+    try {
+      parsed = JSON.parse(payload.data) as Record<string, unknown>;
+    } catch {
+      // not standard JSON; might be raw text, VIN, or key-value
+    }
+  }
+
+  let vin: string | undefined;
+  let model: string | undefined;
+  let soc: number | undefined;
+  let batteryKwh: number | undefined;
+
+  if (parsed && typeof parsed === 'object') {
+    for (const [k, v] of Object.entries(parsed)) {
+      const lk = k.toLowerCase().replace(/[-_]/g, '');
+      if (lk === 'vin' || lk === 'vehicleid' || lk === 'carvin') {
+        if (typeof v === 'string' && v.trim()) vin = v.trim().toUpperCase();
+      } else if (
+        lk === 'model' ||
+        lk === 'carmodel' ||
+        lk === 'vehiclemodel' ||
+        lk === 'car' ||
+        lk === 'vehicle' ||
+        lk === 'brand'
+      ) {
+        if (typeof v === 'string' && v.trim()) model = v.trim();
+      } else if (lk === 'soc' || lk === 'stateofcharge') {
+        const num = Number(v);
+        if (!Number.isNaN(num)) soc = num;
+      } else if (lk === 'battery' || lk === 'batterykwh' || lk === 'capacity' || lk === 'ratedcapacity') {
+        const num = Number(v);
+        if (!Number.isNaN(num)) batteryKwh = num;
+      }
+    }
+  } else if (payload.data && typeof payload.data === 'string') {
+    const raw = payload.data.trim();
+    const vinMatch = raw.match(/\b([A-HJ-NPR-Z0-9]{17})\b/i);
+    if (vinMatch) {
+      vin = vinMatch[1].toUpperCase();
+    }
+  }
+
+  const vehicleInfo = {
+    vin,
+    model,
+    soc,
+    batteryKwh,
+    data: parsed || (payload.data ? { raw: payload.data } : undefined),
+    receivedAt: new Date(),
+  };
+
+  // Cache on ChargePoint so upcoming transactions can inherit it
+  await ChargePoint.findByIdAndUpdate(conn.ref, {
+    $set: {
+      lastVehicleInfo: vehicleInfo,
+    },
+  }).catch(() => undefined);
+
+  // If there is an ongoing transaction on this station, attach vehicle info directly
+  const activeTx = await Transaction.findOne({
+    chargePointId: conn.ref,
+    status: 'Active',
+  }).sort({ startTimestamp: -1 });
+
+  if (activeTx) {
+    if (vin) activeTx.vehicleVin = vin;
+    if (model) activeTx.vehicleModel = model;
+    if (soc !== undefined) activeTx.lastSocPercent = soc;
+    if (batteryKwh !== undefined) activeTx.vehicleBatteryKwh = batteryKwh;
+    activeTx.vehicleData = parsed || (payload.data ? { raw: payload.data } : undefined);
+    await activeTx.save().catch(() => undefined);
+
+    ocppLogger.info(
+      { cp: conn.cpId, transactionId: activeTx._id, vin, model },
+      'linked vehicle info from DataTransfer to active transaction',
+    );
+  }
+
+  bus.emitEvent('chargepoint.datatransfer', conn.cpId, {
+    vendorId: payload.vendorId,
+    messageId: payload.messageId,
+    data: payload.data,
+    vehicle: { vin, model, soc, batteryKwh },
+  });
+
+  return { status: 'Accepted' as const };
 }
 
 // ---------------------------------------------------------------------------

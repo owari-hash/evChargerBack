@@ -104,6 +104,18 @@ export async function startTransaction(
     feePercent: cp ? await feePercentForStation(cp) : undefined,
     // null = "no client", distinct from sessions recorded before this field existed.
     clientId: cp?.clientId ?? null,
+    // Inherit vehicle information from recent DataTransfer/BMS handshake (within 15 min)
+    ...(cp?.lastVehicleInfo &&
+    cp.lastVehicleInfo.receivedAt &&
+    Date.now() - new Date(cp.lastVehicleInfo.receivedAt).getTime() < 15 * 60 * 1000
+      ? {
+          vehicleVin: cp.lastVehicleInfo.vin,
+          vehicleModel: cp.lastVehicleInfo.model,
+          vehicleSoc: cp.lastVehicleInfo.soc,
+          vehicleBatteryKwh: cp.lastVehicleInfo.batteryKwh,
+          vehicleData: cp.lastVehicleInfo.data,
+        }
+      : {}),
   });
 
   if (idTagInfo.status === 'Accepted') {

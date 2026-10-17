@@ -30,6 +30,13 @@ const transactionSchema = new Schema(
     lastSocPercent: { type: Number },
     lastMeterValueAt: { type: Date },
 
+    // Vehicle identification & telemetry (from GB/T BRM, ISO 15118, or DataTransfer)
+    vehicleVin: { type: String, index: true, sparse: true },
+    vehicleModel: { type: String },
+    vehicleSoc: { type: Number },
+    vehicleBatteryKwh: { type: Number },
+    vehicleData: { type: Schema.Types.Mixed },
+
     tariffPerKwh: { type: Number },
     /** Total the driver pays: energyCost + feeAmount. */
     cost: { type: Number },

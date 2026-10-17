@@ -20,6 +20,7 @@ export type CsmsEventName =
   | 'wallet.credited'
   | 'wallet.debited'
   | 'command.result'
+  | 'chargepoint.datatransfer'
   | 'ocpp.message';
 
 export interface CsmsEvent {

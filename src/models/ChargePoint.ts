@@ -61,6 +61,16 @@ const chargePointSchema = new Schema(
     remoteAddress: { type: String },
     numberOfConnectors: { type: Number, default: 0 },
 
+    // Vehicle information captured from DataTransfer or charger handshake
+    lastVehicleInfo: {
+      vin: { type: String },
+      model: { type: String },
+      soc: { type: Number },
+      batteryKwh: { type: Number },
+      data: { type: Schema.Types.Mixed },
+      receivedAt: { type: Date },
+    },
+
     // Site metadata
     clientId: { type: Schema.Types.ObjectId, ref: 'Client', default: null, index: true },
     /**
