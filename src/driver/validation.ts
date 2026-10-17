@@ -115,6 +115,15 @@ export const verifyPhoneSchema = z.object({
   code: smsCodeSchema,
 });
 
+export const guestSendCodeSchema = z.object({
+  phone: phoneSchema,
+});
+
+export const guestLoginSchema = z.object({
+  phone: phoneSchema,
+  code: smsCodeSchema,
+});
+
 export const stationQuerySchema = z.object({
   search: z.string().trim().max(120).optional(),
   status: z.enum(['all', 'available', 'busy', 'offline']).default('all'),

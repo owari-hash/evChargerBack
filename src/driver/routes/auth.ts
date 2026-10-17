@@ -57,6 +57,8 @@ import {
   pinResetSchema,
   signupCompleteSchema,
   signupSendCodeSchema,
+  guestSendCodeSchema,
+  guestLoginSchema,
   verifyPhoneSchema,
 } from '../validation';
 
@@ -223,6 +225,64 @@ authRoutes.post(
 
     setSessionCookie(res, user);
     return { user: toPublicUser(user) };
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Instant Guest Direct Charging: send code → login (find or create user)
+// ---------------------------------------------------------------------------
+
+const guestOwner = (phone: string) => `guest:${phone}`;
+
+authRoutes.post(
+  '/guest/send-code',
+  route(async (req) => {
+    guard(req, 'auth:guest-send-code', 10, HOUR);
+    const { phone } = parseBody(req, guestSendCodeSchema);
+
+    const code = await sendSmsCode({
+      owner: guestOwner(phone),
+      kind: 'phone_verify',
+      destination: phone,
+      text: (c) => `ePlug цэнэглэлтийн нэг удаагийн код: ${c}. Кодоо хэнд ч бүү дамжуулаарай.`,
+    });
+
+    return { ok: true, destination: maskDestination(phone, 'sms'), ...devOnly({ devCode: code }) };
+  }),
+);
+
+authRoutes.post(
+  '/guest/login',
+  route(async (req, res) => {
+    guard(req, 'auth:guest-login', 20, HOUR);
+    const { phone, code } = parseBody(req, guestLoginSchema);
+
+    if (!(await consumeSmsCode(guestOwner(phone), 'phone_verify', code))) {
+      throw invalidCode();
+    }
+
+    let user = await store.findUserByPhone(phone);
+    if (!user) {
+      user = await store.createUser({
+        phone,
+        phoneVerifiedAt: new Date().toISOString(),
+      });
+    } else if (!user.isActive) {
+      throw unauthorized(WRONG_CREDENTIALS);
+    }
+
+    const idTag = user.idTag ?? (await ensureChargeTag(user));
+    if (idTag && !user.idTag) {
+      user = { ...user, idTag };
+    }
+
+    const updated =
+      (await store.updateUser(user.id, {
+        lastLoginAt: new Date().toISOString(),
+      })) ?? user;
+
+    setSessionCookie(res, updated);
+    return { ok: true, user: toPublicUser(updated) };
   }),
 );
 

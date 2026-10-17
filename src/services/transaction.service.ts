@@ -9,10 +9,17 @@ import type { StopReason } from '../models/enums';
 import type { IdTagInfo, MeterValueEntry } from '../ocpp/schemas/common';
 import { store } from '../driver/store';
 import { bus } from '../realtime/events';
+import { IdTag } from '../models/IdTag';
+import { sendSms } from '../driver/notify';
 import { authorizeIdTag, canStopTransaction } from './authorization.service';
 import { storeMeterValues } from './meter.service';
 import { applySessionCost, feePercentForStation } from './pricing.service';
-import { chargeSessionToWallet, resettleSessionWallet } from './wallet.service';
+import {
+  balanceOf,
+  chargeSessionToWallet,
+  resettleSessionWallet,
+  resolveWalletOwnerForIdTag,
+} from './wallet.service';
 
 export interface StartTransactionInput {
   /** The charge point's `_id`, which is what the records reference. */
@@ -207,6 +214,24 @@ export async function stopTransaction(
         connectorId: tx.connectorId,
         energyWh: tx.energyWh ?? 0,
       });
+    }
+
+    // Notify the driver via SMS if ownerPhone is registered
+    try {
+      const idTagDoc = await IdTag.findById(tx.idTag).select('ownerPhone').lean();
+      if (idTagDoc?.ownerPhone) {
+        const owner = await resolveWalletOwnerForIdTag(tx.idTag);
+        const balance = owner ? await balanceOf(owner) : 0;
+        const kwh = ((tx.energyWh ?? 0) / 1000).toFixed(2);
+        const costStr = (tx.cost ?? 0).toLocaleString('mn-MN');
+        const balanceStr = balance.toLocaleString('mn-MN');
+        void sendSms({
+          to: idTagDoc.ownerPhone,
+          text: `ePlug цэнэглэлт дууслаа (#${tx._id}). Ашигласан: ${costStr}₮ (${kwh} кВт·ц). Үлдэгдэл: ${balanceStr}₮. Баярлалаа!`,
+        }).catch((err) => logger.warn({ err, txId: tx._id }, 'failed to send stop SMS to driver'));
+      }
+    } catch (err) {
+      logger.warn({ err, txId: tx._id }, 'failed to prepare stop SMS notification');
     }
   } else if (tx.status === 'Completed' && tx.closedByCsms) {
     await resettleClosedTransaction(tx._id, input);
