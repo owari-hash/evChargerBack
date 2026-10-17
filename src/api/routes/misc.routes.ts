@@ -330,15 +330,24 @@ connectorsRouter.get(
     if (q.status) filter.status = q.status;
 
     const { skip, limit } = paginate(q);
-    const [data, total] = await Promise.all([
+    const countFilter: Record<string, unknown> = {};
+    if (filter.chargePointId) countFilter.chargePointId = filter.chargePointId;
+    countFilter.connectorId = { $gt: 0 };
+
+    const [data, total, statusAgg] = await Promise.all([
       Connector.find(filter)
         .sort({ chargePointId: 1, connectorId: 1 })
         .skip(skip)
         .limit(limit)
         .lean(),
       Connector.countDocuments(filter),
+      Connector.aggregate([
+        { $match: countFilter },
+        { $group: { _id: '$status', count: { $sum: 1 } } },
+      ]),
     ]);
-    res.json({ data, total, page: q.page, limit: q.limit });
+    const statusCounts = Object.fromEntries(statusAgg.map((s: { _id: string; count: number }) => [s._id, s.count]));
+    res.json({ data, total, page: q.page, limit: q.limit, statusCounts });
   }),
 );
 

@@ -157,11 +157,22 @@ const personSchema = z.object({
   max_qr_account_count: z.number().int().positive().optional(),
 });
 
+function normalizeMerchant(m: any): any {
+  if (!m || typeof m !== 'object') return m;
+  const mid = m.merchant_id || m.id || m.merchantId || m._id;
+  return {
+    ...m,
+    merchant_id: mid ? String(mid).trim() : undefined,
+    id: mid ? String(mid).trim() : undefined,
+  };
+}
+
 qpayRouter.post(
   '/merchants/company',
   validate(companySchema),
   asyncHandler(async (req, res) => {
-    res.status(201).json(await quickqr.createCompanyMerchant(req.body as z.infer<typeof companySchema>));
+    const created = await quickqr.createCompanyMerchant(req.body as z.infer<typeof companySchema>);
+    res.status(201).json(normalizeMerchant(created));
   }),
 );
 
@@ -169,12 +180,11 @@ qpayRouter.put(
   '/merchants/company/:merchantId',
   validate(companySchema),
   asyncHandler(async (req, res) => {
-    res.json(
-      await quickqr.updateCompanyMerchant(
-        req.params.merchantId,
-        req.body as z.infer<typeof companySchema>,
-      ),
+    const updated = await quickqr.updateCompanyMerchant(
+      req.params.merchantId,
+      req.body as z.infer<typeof companySchema>,
     );
+    res.json(normalizeMerchant(updated));
   }),
 );
 
@@ -182,7 +192,8 @@ qpayRouter.post(
   '/merchants/person',
   validate(personSchema),
   asyncHandler(async (req, res) => {
-    res.status(201).json(await quickqr.createPersonMerchant(req.body as z.infer<typeof personSchema>));
+    const created = await quickqr.createPersonMerchant(req.body as z.infer<typeof personSchema>);
+    res.status(201).json(normalizeMerchant(created));
   }),
 );
 
@@ -190,12 +201,11 @@ qpayRouter.put(
   '/merchants/person/:merchantId',
   validate(personSchema),
   asyncHandler(async (req, res) => {
-    res.json(
-      await quickqr.updatePersonMerchant(
-        req.params.merchantId,
-        req.body as z.infer<typeof personSchema>,
-      ),
+    const updated = await quickqr.updatePersonMerchant(
+      req.params.merchantId,
+      req.body as z.infer<typeof personSchema>,
     );
+    res.json(normalizeMerchant(updated));
   }),
 );
 
@@ -209,14 +219,21 @@ qpayRouter.get(
   validate(listSchema, 'query'),
   asyncHandler(async (req, res) => {
     const q = req.query as unknown as z.infer<typeof listSchema>;
-    res.json(await quickqr.listMerchants(q.page, q.limit));
+    const resList = (await quickqr.listMerchants(q.page, q.limit)) as any;
+    if (resList && Array.isArray(resList.rows)) {
+      resList.rows = resList.rows.map(normalizeMerchant);
+    } else if (Array.isArray(resList)) {
+      return res.json(resList.map(normalizeMerchant));
+    }
+    res.json(resList);
   }),
 );
 
 qpayRouter.get(
   '/merchants/:merchantId',
   asyncHandler(async (req, res) => {
-    res.json(await quickqr.getMerchant(req.params.merchantId));
+    const m = await quickqr.getMerchant(req.params.merchantId);
+    res.json(normalizeMerchant(m));
   }),
 );
 
