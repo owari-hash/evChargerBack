@@ -4,6 +4,7 @@ import { Transaction } from '../models/Transaction';
 import { Connector } from '../models/Connector';
 import { bus } from '../realtime/events';
 import type { MeterValueEntry } from '../ocpp/schemas/common';
+import { applySessionCost } from './pricing.service';
 
 function toWh(value: number, unit?: string): number {
   return unit === 'kWh' ? value * 1000 : value;
@@ -25,6 +26,7 @@ const PHASES = ['L1', 'L2', 'L3'];
  * The station total for one measurand. Stations often list per-phase values
  * (L1/L2/L3, L1-N…) next to — or before — the total, so a value with a phase
  * is never taken as the total. Without a total, the three phases are summed.
+ * For single-phase chargers or simulators reporting only L1, the reported phase is used.
  */
 function total(
   values: MeterValueEntry['sampledValue'],
@@ -34,12 +36,22 @@ function total(
   const matching = values.filter(
     (sv) => (sv.measurand ?? 'Energy.Active.Import.Register') === measurand && Number.isFinite(Number(sv.value)),
   );
+  if (matching.length === 0) return undefined;
+
   const whole = matching.find((sv) => !sv.phase);
   if (whole) return convert(Number(whole.value), whole.unit);
+
   const perPhase = PHASES.map((p) => matching.find((sv) => sv.phase === p || sv.phase === `${p}-N`));
   if (perPhase.every(Boolean)) {
     return perPhase.reduce((sum, sv) => sum + convert(Number(sv!.value), sv!.unit), 0);
   }
+
+  // Single-phase fallback (e.g. only L1 provided by simulator or 1-phase AC station)
+  const present = matching.filter((sv) => sv.phase);
+  if (present.length > 0) {
+    return present.reduce((sum, sv) => sum + convert(Number(sv.value), sv.unit), 0);
+  }
+
   return undefined;
 }
 
@@ -101,11 +113,25 @@ export async function storeMeterValues(
   if (transactionId !== undefined) {
     const tx = await Transaction.findById(transactionId);
     if (tx && tx.status === 'Active') {
+      const prevMeterWh = tx.lastMeterWh ?? tx.meterStart;
+      const prevTime = tx.lastMeterValueAt;
       if (energyWh !== undefined) {
         tx.lastMeterWh = energyWh;
         tx.energyWh = Math.max(0, Math.round(energyWh - tx.meterStart));
+        applySessionCost(tx);
       }
-      if (powerW !== undefined) tx.lastPowerW = powerW;
+      if (powerW !== undefined) {
+        tx.lastPowerW = powerW;
+      } else if (energyWh !== undefined && prevTime) {
+        const dtSeconds =
+          (new Date(latest.timestamp).getTime() - new Date(prevTime).getTime()) / 1000;
+        if (dtSeconds > 0 && dtSeconds <= 120) {
+          const deltaWh = energyWh - prevMeterWh;
+          if (deltaWh >= 0) {
+            tx.lastPowerW = Math.round((deltaWh / dtSeconds) * 3600);
+          }
+        }
+      }
       if (socPercent !== undefined) tx.lastSocPercent = socPercent;
       tx.lastMeterValueAt = latest.timestamp;
       await tx.save();
