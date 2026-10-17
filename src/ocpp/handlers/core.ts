@@ -6,6 +6,7 @@ import { ChargePoint } from '../../models/ChargePoint';
 import { Connector } from '../../models/Connector';
 import { Reservation } from '../../models/Reservation';
 import { Transaction } from '../../models/Transaction';
+import { VehicleDetection } from '../../models/VehicleDetection';
 import { bus } from '../../realtime/events';
 import { authorizeIdTag } from '../../services/authorization.service';
 import { storeMeterValues } from '../../services/meter.service';
@@ -116,6 +117,21 @@ export async function onAuthorize(
   payload: Req<typeof core.AuthorizeReq>,
   conn: ChargePointConnection,
 ) {
+  // Check if idTag looks like a vehicle VIN or Autocharge token (17 chars)
+  const isLikelyVin = /^[A-HJ-NPR-Z0-9]{17}$/i.test(payload.idTag.trim());
+  if (isLikelyVin) {
+    await VehicleDetection.create({
+      cpId: conn.cpId,
+      chargePointId: conn.ref,
+      vin: payload.idTag.trim().toUpperCase(),
+      source: 'Authorize',
+      protocolMessage: 'Authorize.idTag',
+      remoteAddress: (conn as unknown as { remoteAddress?: string }).remoteAddress,
+      rawPayload: { idTag: payload.idTag },
+      detectedAt: new Date(),
+    }).catch((err) => ocppLogger.warn({ err }, 'failed to record VehicleDetection from Authorize'));
+  }
+
   const idTagInfo = await authorizeIdTag(payload.idTag, { chargePointId: conn.ref });
   await touch(conn.ref);
   return { idTagInfo: serialiseIdTagInfo(idTagInfo) };
@@ -125,6 +141,8 @@ export async function onStartTransaction(
   payload: Req<typeof core.StartTransactionReq>,
   conn: ChargePointConnection,
 ) {
+  const isLikelyVin = /^[A-HJ-NPR-Z0-9]{17}$/i.test(payload.idTag.trim());
+
   const { transactionId, idTagInfo } = await startTransaction({
     chargePointId: conn.ref,
     cpId: conn.cpId,
@@ -134,6 +152,22 @@ export async function onStartTransaction(
     timestamp: payload.timestamp,
     reservationId: payload.reservationId,
   });
+
+  if (isLikelyVin) {
+    await VehicleDetection.create({
+      cpId: conn.cpId,
+      chargePointId: conn.ref,
+      connectorId: payload.connectorId,
+      vin: payload.idTag.trim().toUpperCase(),
+      source: 'StartTransaction',
+      protocolMessage: 'StartTransaction.idTag',
+      transactionId,
+      remoteAddress: (conn as unknown as { remoteAddress?: string }).remoteAddress,
+      rawPayload: payload,
+      detectedAt: new Date(),
+    }).catch((err) => ocppLogger.warn({ err }, 'failed to record VehicleDetection from StartTransaction'));
+  }
+
   await touch(conn.ref);
   return { transactionId, idTagInfo: serialiseIdTagInfo(idTagInfo) };
 }
@@ -329,6 +363,22 @@ export async function onDataTransfer(
       'linked vehicle info from DataTransfer to active transaction',
     );
   }
+
+  // Always persist a dedicated record to VehicleDetection collection
+  await VehicleDetection.create({
+    cpId: conn.cpId,
+    chargePointId: conn.ref,
+    vin,
+    model,
+    batteryCapacity: batteryKwh,
+    soc,
+    source: 'DataTransfer',
+    protocolMessage: `${payload.vendorId}/${payload.messageId ?? ''}`,
+    transactionId: activeTx?._id,
+    remoteAddress: (conn as unknown as { remoteAddress?: string }).remoteAddress,
+    rawPayload: parsed || (payload.data ? { raw: payload.data } : { vendorId: payload.vendorId, messageId: payload.messageId }),
+    detectedAt: new Date(),
+  }).catch((err) => ocppLogger.warn({ err }, 'failed to record VehicleDetection from DataTransfer'));
 
   bus.emitEvent('chargepoint.datatransfer', conn.cpId, {
     vendorId: payload.vendorId,

@@ -34,6 +34,7 @@ import { appReleasesRouter } from './routes/appReleases.routes';
 import { clientsRouter } from './routes/clients.routes';
 import { connectorAdminRouter } from './routes/connectors.routes';
 import { settlementsRouter } from './routes/settlements.routes';
+import { vehicleDetectionsRouter } from './routes/vehicleDetections.routes';
 
 export function createApp(): Express {
   const app = express();
@@ -168,6 +169,7 @@ export function createApp(): Express {
   api.use('/security', securityRouter);
   api.use('/stats', statsRouter);
   api.use('/events', eventsRouter);
+  api.use('/vehicle-detections', vehicleDetectionsRouter);
 
   app.use(base || '/', api);
 
