@@ -50,7 +50,31 @@ export function createApp(): Express {
   app.use(
     pinoHttp({
       logger: apiLogger,
-      autoLogging: { ignore: (req) => req.url?.startsWith(`${base}/events/stream`) === true },
+      autoLogging: {
+        ignore: (req) => {
+          const url = req.url ?? '';
+          // Ignore high-frequency polling requests so they don't pollute logs
+          return (
+            url.includes('/live') ||
+            url.includes('/wallet') ||
+            url.includes('/announcements') ||
+            url.includes('/events/stream') ||
+            url.includes('/health')
+          );
+        },
+      },
+      serializers: {
+        req: (req) => ({
+          method: req.method,
+          url: req.url,
+        }),
+        res: (res) => ({
+          statusCode: res.statusCode,
+        }),
+      },
+      customSuccessMessage: (req, res) => `${req.method} ${req.url} -> ${res.statusCode}`,
+      customErrorMessage: (req, res, err) =>
+        `${req.method} ${req.url} -> ${res.statusCode} (${err.message})`,
     }),
   );
 
