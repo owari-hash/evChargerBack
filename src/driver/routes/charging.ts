@@ -85,8 +85,20 @@ stationRoutes.get(
       const here = (s: ChargingSession) =>
         s.chargePointId === station.id || s.chargePointId === station.cpId;
       // A charge that has just ended is still what the driver is looking at, so
-      // the most recent one is returned until they leave the page.
-      session = mine.find((s) => s.status === 'Active' && here(s)) ?? mine.find(here) ?? null;
+      // recent sessions (< 15 minutes since stop) are returned until they leave.
+      // Older sessions must never hijack the station flow.
+      const RECENT_STOP_WINDOW_MS = 15 * 60 * 1000;
+      const isRecent = (s: ChargingSession) =>
+        s.status === 'Active' ||
+        Boolean(
+          s.stopTimestamp &&
+            Date.now() - new Date(s.stopTimestamp).getTime() < RECENT_STOP_WINDOW_MS,
+        );
+
+      session =
+        mine.find((s) => s.status === 'Active' && here(s)) ??
+        mine.find((s) => here(s) && isRecent(s)) ??
+        null;
     }
 
     return {

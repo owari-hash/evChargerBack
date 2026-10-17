@@ -465,7 +465,7 @@ export async function remoteStart(
   if (await Transaction.exists({ idTag, status: 'Active' })) {
     throw new DriverError(409, 'Танд үргэлжилж буй цэнэглэлт байна. Эхлээд түүнийгээ дуусгана уу.');
   }
-  if (env.WALLET_ENABLED && env.WALLET_REQUIRE_BALANCE_TO_START) {
+  if (env.WALLET_ENABLED) {
     const funds = await hasBalanceToStart(idTag);
     if (!funds.ok) {
       throw new DriverError(

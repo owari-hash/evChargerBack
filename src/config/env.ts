@@ -178,9 +178,9 @@ const schema = z.object({
   WALLET_ALLOW_NEGATIVE: bool(true),
   /**
    * Refuse Authorize for a tag whose wallet is below WALLET_MIN_START_BALANCE.
-   * Off by default: turning it on stops every card that has no wallet yet.
+   * Defaults to true to ensure sessions are not started without sufficient funds.
    */
-  WALLET_REQUIRE_BALANCE_TO_START: bool(false),
+  WALLET_REQUIRE_BALANCE_TO_START: bool(true),
 
   // ---- Driver API (/app-api) — used by the kiosk web app and the Flutter app ----
   DRIVER_API_BASE_PATH: path('/app-api'),
