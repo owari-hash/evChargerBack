@@ -244,7 +244,7 @@ authRoutes.post(
       owner: guestOwner(phone),
       kind: 'phone_verify',
       destination: phone,
-      text: (c) => `ePlug цэнэглэлтийн нэг удаагийн код: ${c}. Кодоо хэнд ч бүү дамжуулаарай.`,
+      text: (c) => `Tany neg udaagiin code: ${c}.`,
     });
 
     return { ok: true, destination: maskDestination(phone, 'sms'), ...devOnly({ devCode: code }) };

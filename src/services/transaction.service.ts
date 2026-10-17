@@ -227,7 +227,7 @@ export async function stopTransaction(
         const balanceStr = balance.toLocaleString('mn-MN');
         void sendSms({
           to: idTagDoc.ownerPhone,
-          text: `ePlug цэнэглэлт дууслаа (#${tx._id}). Ашигласан: ${costStr}₮ (${kwh} кВт·ц). Үлдэгдэл: ${balanceStr}₮. Баярлалаа!`,
+          text: `Tany tseneglelt duuslaa. Ashiglasan:(${kwh} kw). Uldegel: ${balanceStr}. Bayrlalaa!`,
         }).catch((err) => logger.warn({ err, txId: tx._id }, 'failed to send stop SMS to driver'));
       }
     } catch (err) {
