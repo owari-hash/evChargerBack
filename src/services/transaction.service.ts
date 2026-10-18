@@ -192,12 +192,25 @@ export async function stopTransaction(
 
   if (tx.status === 'Active') {
     tx.status = 'Completed';
-    tx.meterStop = input.meterStop;
-    tx.stopTimestamp = input.timestamp;
+    // Protect against station/simulator rewinding meterStop below already accumulated telemetry
+    const finalMeterStop = Math.max(
+      input.meterStop ?? 0,
+      tx.lastMeterWh ?? tx.meterStart,
+      tx.meterStart,
+    );
+    tx.meterStop = finalMeterStop;
+    tx.lastMeterWh = finalMeterStop;
+    tx.energyWh = Math.max(tx.energyWh ?? 0, finalMeterStop - tx.meterStart);
+
+    // Stop timestamp must be at or after startTimestamp and valid (fallback to now)
+    const validStop =
+      input.timestamp &&
+      !isNaN(new Date(input.timestamp).getTime()) &&
+      new Date(input.timestamp) >= tx.startTimestamp;
+    tx.stopTimestamp = validStop ? input.timestamp : new Date();
+
     tx.stopReason = input.reason ?? null;
     tx.stopIdTag = input.idTag;
-    tx.energyWh = Math.max(0, input.meterStop - tx.meterStart);
-    tx.lastMeterWh = input.meterStop;
     applySessionCost(tx);
     await tx.save();
 
@@ -336,14 +349,23 @@ async function resettleClosedTransaction(
   );
   if (!tx) return;
 
-  const energyWh = Math.max(0, input.meterStop - tx.meterStart);
-  if (energyWh === tx.energyWh) return;
+  const finalMeterStop = Math.max(
+    input.meterStop ?? 0,
+    tx.lastMeterWh ?? tx.meterStart,
+    tx.meterStart,
+  );
+  const energyWh = Math.max(tx.energyWh ?? 0, finalMeterStop - tx.meterStart);
+  if (energyWh === tx.energyWh && tx.meterStop === finalMeterStop) return;
 
   const previousWh = tx.energyWh ?? 0;
-  tx.meterStop = input.meterStop;
-  tx.lastMeterWh = input.meterStop;
+  tx.meterStop = finalMeterStop;
+  tx.lastMeterWh = finalMeterStop;
   tx.energyWh = energyWh;
-  tx.stopTimestamp = input.timestamp;
+  const validStop =
+    input.timestamp &&
+    !isNaN(new Date(input.timestamp).getTime()) &&
+    new Date(input.timestamp) >= tx.startTimestamp;
+  tx.stopTimestamp = validStop ? input.timestamp : (tx.stopTimestamp || new Date());
   if (input.reason) tx.stopReason = input.reason;
   if (input.idTag) tx.stopIdTag = input.idTag;
   applySessionCost(tx);
