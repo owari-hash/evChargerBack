@@ -13,7 +13,7 @@ import { IdTag } from '../models/IdTag';
 import { sendSms } from '../driver/notify';
 import { authorizeIdTag, canStopTransaction } from './authorization.service';
 import { storeMeterValues } from './meter.service';
-import { applySessionCost, feePercentForStation } from './pricing.service';
+import { applySessionCost, capCostToBalance, feePercentForStation } from './pricing.service';
 import {
   balanceOf,
   chargeSessionToWallet,
@@ -164,6 +164,19 @@ export interface StopTransactionInput {
   transactionData?: MeterValueEntry[];
 }
 
+async function enforcePrepaidBalanceCap(tx: TransactionDoc): Promise<void> {
+  if (!env.WALLET_ENABLED || env.WALLET_ALLOW_NEGATIVE) return;
+  try {
+    const owner = await resolveWalletOwnerForIdTag(tx.idTag);
+    if (owner && owner.ownerType !== 'CLIENT') {
+      const balance = await balanceOf(owner);
+      capCostToBalance(tx, balance);
+    }
+  } catch (err) {
+    logger.warn({ err, txId: tx._id }, 'failed capping prepaid cost to wallet balance');
+  }
+}
+
 export async function stopTransaction(
   input: StopTransactionInput,
 ): Promise<{ idTagInfo?: IdTagInfo }> {
@@ -212,6 +225,7 @@ export async function stopTransaction(
     tx.stopReason = input.reason ?? null;
     tx.stopIdTag = input.idTag;
     applySessionCost(tx);
+    await enforcePrepaidBalanceCap(tx);
     await tx.save();
 
     await Connector.updateOne(
@@ -306,6 +320,7 @@ export async function closeFromLastMeter(
   tx.meterStop = meterStop;
   tx.energyWh = Math.max(0, meterStop - tx.meterStart);
   applySessionCost(tx);
+  await enforcePrepaidBalanceCap(tx);
   await tx.save();
 
   await Connector.updateOne(
@@ -385,6 +400,7 @@ async function resettleClosedTransaction(
   if (input.reason) tx.stopReason = input.reason;
   if (input.idTag) tx.stopIdTag = input.idTag;
   applySessionCost(tx);
+  await enforcePrepaidBalanceCap(tx);
   await tx.save();
 
   logger.info(

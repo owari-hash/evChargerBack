@@ -231,3 +231,32 @@ export function applySessionCost(tx: {
     tx.tariffPerKwh = (priced as any).tariffPerKwh;
   }
 }
+
+/**
+ * Strictly clamp the session cost to a prepaid wallet balance or limit.
+ * Recalculates energyCost and feeAmount proportionally so that
+ * energyCost + feeAmount === cost exactly, preventing any negative balance or overflow.
+ */
+export function capCostToBalance(
+  tx: {
+    cost?: number | null;
+    energyCost?: number | null;
+    feeAmount?: number | null;
+    feePercent?: number | null;
+  },
+  maxAllowedCost: number,
+): void {
+  const cap = Math.max(0, maxAllowedCost);
+  if (typeof tx.cost === 'number' && tx.cost > cap) {
+    tx.cost = cap;
+    const fee = tx.feePercent ?? 0;
+    if (fee > 0) {
+      tx.energyCost = Math.round((cap * 100) / (100 + fee));
+      tx.feeAmount = cap - tx.energyCost;
+    } else {
+      tx.energyCost = cap;
+      tx.feeAmount = 0;
+    }
+  }
+}
+

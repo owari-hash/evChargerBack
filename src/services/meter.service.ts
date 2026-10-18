@@ -4,7 +4,7 @@ import { Transaction } from '../models/Transaction';
 import { Connector } from '../models/Connector';
 import { bus } from '../realtime/events';
 import type { MeterValueEntry } from '../ocpp/schemas/common';
-import { applySessionCost } from './pricing.service';
+import { applySessionCost, capCostToBalance } from './pricing.service';
 import { env } from '../config/env';
 import { ocppLogger } from '../lib/logger';
 import { connectionManager } from '../ocpp/manager';
@@ -144,7 +144,6 @@ export async function storeMeterValues(
       }
       if (socPercent !== undefined) tx.lastSocPercent = socPercent;
       tx.lastMeterValueAt = latest.timestamp;
-      await tx.save();
 
       // Check driver wallet balance to preemptively stop session before running into negative balance/debt
       if (
@@ -157,8 +156,19 @@ export async function storeMeterValues(
           // CLIENT ownerType represents internal/fleet cards that charge without prepaid balance cut-off
           if (owner && owner.ownerType !== 'CLIENT') {
             const balance = await balanceOf(owner);
-            // If cost has reached or is about to exceed available balance (margin: 50 MNT)
-            if (tx.cost >= balance - 50) {
+
+            // Strictly prevent session cost from exceeding wallet balance when negative balance is forbidden
+            if (!env.WALLET_ALLOW_NEGATIVE) {
+              capCostToBalance(tx, balance);
+            }
+
+            // Dynamic buffer: estimated 15 seconds of charging output, minimum 200 MNT
+            const pW = tx.lastPowerW ?? 15000;
+            const ratePerWh = ((tx.tariffPerKwh ?? 500) * (1 + (tx.feePercent ?? 0) / 100)) / 1000;
+            const bufferMnt = Math.max(200, Math.round(((pW * 15) / 3600) * ratePerWh));
+
+            // If cost has reached or is about to exceed available balance
+            if (tx.cost >= balance - bufferMnt) {
               const now = Date.now();
               const lastAttempt = lastRemoteStopAttempts.get(tx._id) ?? 0;
               if (now - lastAttempt > 4000) {
@@ -170,11 +180,11 @@ export async function storeMeterValues(
                     idTag: tx.idTag,
                     cost: tx.cost,
                     balance,
+                    bufferMnt,
                   },
                   'Driver wallet balance exhausted; issuing RemoteStopTransaction to prevent negative balance',
                 );
                 tx.stoppedRemotely = true;
-                await tx.save();
 
                 connectionManager
                   .send<{ status: string }>(
@@ -199,6 +209,8 @@ export async function storeMeterValues(
           );
         }
       }
+
+      await tx.save();
     }
 
   bus.emitEvent('transaction.metervalue', cpId, {
