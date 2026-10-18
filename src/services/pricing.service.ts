@@ -197,7 +197,7 @@ export function sessionCostTimeWeighted(
 export function applySessionCost(tx: {
   energyWh?: number | null;
   tariffPerKwh?: number | null;
-  tariffZones?: TariffZone[] | null;
+  tariffZones?: any;
   startTimestamp?: Date | null;
   stopTimestamp?: Date | null;
   feePercent?: number | null;
@@ -215,7 +215,7 @@ export function applySessionCost(tx: {
           tx.energyWh ?? 0,
           tx.startTimestamp,
           tx.stopTimestamp ?? new Date(),
-          tx.tariffZones,
+          tx.tariffZones as TariffZone[],
           tx.tariffPerKwh,
           tx.feePercent,
         )
@@ -226,5 +226,7 @@ export function applySessionCost(tx: {
   tx.cost = priced.cost;
   // The blended rate this session actually billed at — the flat path leaves
   // tariffPerKwh exactly as it already was, since there is only one rate.
-  if ('tariffPerKwh' in priced) tx.tariffPerKwh = priced.tariffPerKwh;
+  if ('tariffPerKwh' in priced && typeof (priced as any).tariffPerKwh === 'number') {
+    tx.tariffPerKwh = (priced as any).tariffPerKwh;
+  }
 }
