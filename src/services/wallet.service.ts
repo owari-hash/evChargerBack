@@ -416,21 +416,38 @@ export async function chargeSessionToWallet(input: {
     if (!owner) return null;
 
     const kwh = ((input.energyWh ?? 0) / 1000).toFixed(2);
+    const allowNegative = env.WALLET_ALLOW_NEGATIVE;
+
+    let debitAmount = amount;
+    // When allowNegative is false (default), strictly ensure wallet balance never drops below 0.
+    // Clamp the debit amount to whatever positive balance exists in the wallet.
+    if (!allowNegative) {
+      const current = await findWallet(owner);
+      const currentBalance = Math.max(0, current?.balance ?? 0);
+      debitAmount = Math.min(amount, currentBalance);
+
+      if (debitAmount <= 0) {
+        walletLogger.warn(
+          { transactionId: input.transactionId, idTag: input.idTag, balance: current?.balance, amount },
+          'wallet has 0 balance; skipping debit to strictly prevent negative balance',
+        );
+        return null;
+      }
+    }
+
     return await debit(
       owner,
-      amount,
+      debitAmount,
       'CHARGE',
       {
-        description: `Цэнэглэлт #${input.transactionId} · ${kwh} кВт·ц`,
+        description: `Цэнэглэлт #${input.transactionId} · ${kwh} кВт·ц${debitAmount < amount ? ' (Үлдэгдэл хүрэлцээгүй)' : ''}`,
         idempotencyKey: `transaction:${input.transactionId}`,
         transactionId: input.transactionId,
         chargePointId: input.chargePointId,
         connectorId: input.connectorId,
         idTag: input.idTag,
       },
-      // Always settle the full cost: the shortfall becomes a debt the next
-      // top-up clears, rather than energy nobody pays for.
-      { allowNegative: true },
+      { allowNegative: false },
     );
   } catch (err) {
     walletLogger.error(
@@ -438,6 +455,22 @@ export async function chargeSessionToWallet(input: {
       'failed to charge session to wallet',
     );
     return null;
+  }
+}
+
+/**
+ * Normalizes any historical negative wallet balances to 0, ensuring no wallet remains in debt.
+ */
+export async function normalizeNegativeWallets(): Promise<number> {
+  try {
+    const res = await Wallet.updateMany({ balance: { $lt: 0 } }, { $set: { balance: 0 } });
+    if (res.modifiedCount > 0) {
+      walletLogger.info({ count: res.modifiedCount }, 'Normalized negative wallet balances to 0');
+    }
+    return res.modifiedCount;
+  } catch (err) {
+    walletLogger.error({ err }, 'failed to normalize negative wallets');
+    return 0;
   }
 }
 

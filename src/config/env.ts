@@ -175,7 +175,7 @@ const schema = z.object({
    * alternative — debiting only what is left — silently writes off the shortfall,
    * so this defaults on and the debt is settled by the next top-up.
    */
-  WALLET_ALLOW_NEGATIVE: bool(true),
+  WALLET_ALLOW_NEGATIVE: bool(false),
   /**
    * Refuse Authorize for a tag whose wallet is below WALLET_MIN_START_BALANCE.
    * Defaults to true to ensure sessions are not started without sufficient funds.

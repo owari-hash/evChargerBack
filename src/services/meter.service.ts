@@ -5,6 +5,10 @@ import { Connector } from '../models/Connector';
 import { bus } from '../realtime/events';
 import type { MeterValueEntry } from '../ocpp/schemas/common';
 import { applySessionCost } from './pricing.service';
+import { env } from '../config/env';
+import { ocppLogger } from '../lib/logger';
+import { connectionManager } from '../ocpp/manager';
+import { resolveWalletOwnerForIdTag, balanceOf } from './wallet.service';
 
 function toWh(value: number, unit?: string): number {
   return unit === 'kWh' ? value * 1000 : value;
@@ -135,6 +139,57 @@ export async function storeMeterValues(
       if (socPercent !== undefined) tx.lastSocPercent = socPercent;
       tx.lastMeterValueAt = latest.timestamp;
       await tx.save();
+
+      // Check driver wallet balance to preemptively stop session before running into negative balance/debt
+      if (
+        env.WALLET_ENABLED &&
+        !env.WALLET_ALLOW_NEGATIVE &&
+        !tx.stoppedRemotely &&
+        typeof tx.cost === 'number' &&
+        tx.cost > 0
+      ) {
+        try {
+          const owner = await resolveWalletOwnerForIdTag(tx.idTag);
+          // CLIENT ownerType represents internal/fleet cards that charge without prepaid balance cut-off
+          if (owner && owner.ownerType !== 'CLIENT') {
+            const balance = await balanceOf(owner);
+            // If cost has reached or is about to exceed available balance (margin: 50 MNT)
+            if (tx.cost >= balance - 50) {
+              ocppLogger.warn(
+                {
+                  txId: tx._id,
+                  cpId,
+                  idTag: tx.idTag,
+                  cost: tx.cost,
+                  balance,
+                },
+                'Driver wallet balance exhausted; issuing RemoteStopTransaction to prevent negative balance',
+              );
+              tx.stoppedRemotely = true;
+              await tx.save();
+
+              connectionManager
+                .send<{ status: string }>(
+                  cpId,
+                  'RemoteStopTransaction',
+                  { transactionId: tx._id },
+                  'balance-enforcer',
+                )
+                .catch((err) => {
+                  ocppLogger.error(
+                    { err: (err as Error).message, txId: tx._id, cpId },
+                    'Failed to send RemoteStopTransaction for exhausted balance',
+                  );
+                });
+            }
+          }
+        } catch (err) {
+          ocppLogger.error(
+            { err: (err as Error).message, txId: tx._id },
+            'Failed checking balance exhaustion during meter values update',
+          );
+        }
+      }
     }
   }
 

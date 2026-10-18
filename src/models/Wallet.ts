@@ -36,7 +36,7 @@ const walletSchema = new Schema(
     /** Driver account id for USER, the idTag itself for IDTAG. */
     ownerId: { type: String, required: true },
 
-    balance: { type: Number, default: 0 },
+    balance: { type: Number, default: 0, min: 0 },
     currency: { type: String, default: 'MNT' },
     status: { type: String, enum: WALLET_STATUSES, default: 'ACTIVE', index: true },
 
