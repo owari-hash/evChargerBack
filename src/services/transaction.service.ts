@@ -215,8 +215,14 @@ export async function stopTransaction(
     await tx.save();
 
     await Connector.updateOne(
-      { chargePointId: tx.chargePointId, connectorId: tx.connectorId, currentTransactionId: tx._id },
-      { $set: { currentTransactionId: null } },
+      { chargePointId: tx.chargePointId, connectorId: tx.connectorId },
+      {
+        $set: {
+          currentTransactionId: null,
+          status: 'Available',
+          statusTimestamp: new Date(),
+        },
+      },
     ).catch(() => undefined);
 
     bus.emitEvent('transaction.stopped', input.cpId, {
@@ -303,8 +309,14 @@ export async function closeFromLastMeter(
   await tx.save();
 
   await Connector.updateOne(
-    { chargePointId: tx.chargePointId, connectorId: tx.connectorId, currentTransactionId: tx._id },
-    { $set: { currentTransactionId: null } },
+    { chargePointId: tx.chargePointId, connectorId: tx.connectorId },
+    {
+      $set: {
+        currentTransactionId: null,
+        status: 'Available',
+        statusTimestamp: new Date(),
+      },
+    },
   ).catch(() => undefined);
 
   bus.emitEvent('transaction.stopped', cpId, {
@@ -328,6 +340,10 @@ export async function closeFromLastMeter(
       chargePointId: tx.chargePointId,
       connectorId: tx.connectorId,
       energyWh: tx.energyWh ?? 0,
+    });
+
+    issueEBarimtForTransaction(tx._id).catch((err: unknown) => {
+      logger.warn({ err: (err as Error).message, txId: tx._id }, 'auto-issue e-barimt for csms-closed session failed');
     });
   }
 }
