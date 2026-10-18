@@ -3,6 +3,7 @@ import { Types } from 'mongoose';
 import { z } from 'zod';
 import { requireChargePoint, requireChargePointRef } from '../../lib/chargePointRef';
 import { forbidden, notFound } from '../../lib/errors';
+import { ChargePoint } from '../../models/ChargePoint';
 import { MeterValue } from '../../models/MeterValue';
 import { Transaction } from '../../models/Transaction';
 import { TRANSACTION_STATUSES } from '../../models/enums';
@@ -77,16 +78,25 @@ transactionsRouter.get(
       Transaction.countDocuments(filter),
     ]);
 
-    const driversByIdTag = await store.findUsersByIdTags(data.map((t) => t.idTag));
+    const cpIds = [...new Set(data.map((t) => t.chargePointId).filter(Boolean))];
+    const [driversByIdTag, chargePoints] = await Promise.all([
+      store.findUsersByIdTags(data.map((t) => t.idTag)),
+      cpIds.length > 0 ? ChargePoint.find({ _id: { $in: cpIds } }).select('_id cpId name').lean() : [],
+    ]);
+    const cpMap = new Map(chargePoints.map((cp) => [String(cp._id), cp]));
 
     res.json({
       data: data.map((t) => {
         const driver = driversByIdTag.get(t.idTag);
+        const cp = cpMap.get(String(t.chargePointId));
         return {
           ...t,
           transactionId: t._id,
           id: t._id,
           driver: driver ? toDriverSummary(driver) : null,
+          cpId: cp?.cpId,
+          chargePointName: cp?.name || cp?.cpId,
+          chargePoint: cp ? { id: String(cp._id), cpId: cp.cpId, name: cp.name } : null,
         };
       }),
       total,
@@ -104,11 +114,26 @@ transactionsRouter.get(
       filter.clientId = new Types.ObjectId(req.user.clientId);
     }
     const data = await Transaction.find(filter).sort({ startTimestamp: -1 }).lean();
-    const driversByIdTag = await store.findUsersByIdTags(data.map((t) => t.idTag));
+    const cpIds = [...new Set(data.map((t) => t.chargePointId).filter(Boolean))];
+    const [driversByIdTag, chargePoints] = await Promise.all([
+      store.findUsersByIdTags(data.map((t) => t.idTag)),
+      cpIds.length > 0 ? ChargePoint.find({ _id: { $in: cpIds } }).select('_id cpId name').lean() : [],
+    ]);
+    const cpMap = new Map(chargePoints.map((cp) => [String(cp._id), cp]));
+
     res.json(
       data.map((t) => {
         const driver = driversByIdTag.get(t.idTag);
-        return { ...t, transactionId: t._id, id: t._id, driver: driver ? toDriverSummary(driver) : null };
+        const cp = cpMap.get(String(t.chargePointId));
+        return {
+          ...t,
+          transactionId: t._id,
+          id: t._id,
+          driver: driver ? toDriverSummary(driver) : null,
+          cpId: cp?.cpId,
+          chargePointName: cp?.name || cp?.cpId,
+          chargePoint: cp ? { id: String(cp._id), cpId: cp.cpId, name: cp.name } : null,
+        };
       }),
     );
   }),
@@ -122,12 +147,18 @@ transactionsRouter.get(
     if (req.user?.role === 'CLIENT' && String(tx.clientId ?? '') !== String(req.user.clientId)) {
       throw forbidden('Access denied');
     }
-    const driver = await store.findUserByIdTag(tx.idTag);
+    const [driver, cp] = await Promise.all([
+      store.findUserByIdTag(tx.idTag),
+      ChargePoint.findById(tx.chargePointId).select('_id cpId name').lean(),
+    ]);
     res.json({
       ...tx,
       transactionId: tx._id,
       id: tx._id,
       driver: driver ? toDriverSummary(driver) : null,
+      cpId: cp?.cpId,
+      chargePointName: cp?.name || cp?.cpId,
+      chargePoint: cp ? { id: String(cp._id), cpId: cp.cpId, name: cp.name } : null,
     });
   }),
 );
