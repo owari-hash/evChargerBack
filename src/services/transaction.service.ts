@@ -99,6 +99,7 @@ export async function startTransaction(
     startTimestamp: input.timestamp,
     reservationId: input.reservationId,
     tariffPerKwh: cp?.tariffPerKwh ?? undefined,
+    tariffZones: cp?.tariffZones?.length ? cp.tariffZones : undefined,
     // Snapshot the price terms and the owner: a later change must not reprice
     // a running session or move its earnings to another client.
     feePercent: cp ? await feePercentForStation(cp) : undefined,

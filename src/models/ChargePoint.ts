@@ -85,7 +85,26 @@ const chargePointSchema = new Schema(
     latitude: { type: Number },
     longitude: { type: Number },
     address: { type: String },
+    /** The rate in effect whenever no `tariffZones` entry covers the time. */
     tariffPerKwh: { type: Number },
+    /**
+     * Time-of-day pricing — e.g. 13:00–17:00 at one rate, 17:00–20:00 at
+     * another. `startMinute`/`endMinute` are minutes since local (Mongolia,
+     * UTC+8) midnight, `startMinute < endMinute`, no wraparound past midnight
+     * (a night rate needs two entries: 22:00–24:00 and 00:00–06:00). Zones
+     * must not overlap; the API rejects a set that does.
+     */
+    tariffZones: {
+      type: [
+        {
+          _id: false,
+          startMinute: { type: Number, required: true, min: 0, max: 1439 },
+          endMinute: { type: Number, required: true, min: 1, max: 1440 },
+          tariffPerKwh: { type: Number, required: true, min: 0 },
+        },
+      ],
+      default: [],
+    },
     /** Overrides the client's / network fee for this station. Unset = inherit. */
     feePercent: { type: Number, min: 0, max: 100 },
     /** Overrides the client's e-barimt merchant for this station. Unset = inherit. */

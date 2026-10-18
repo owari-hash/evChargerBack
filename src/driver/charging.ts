@@ -8,7 +8,13 @@ import { CallTimeoutError, OcppRpcError } from '../ocpp/types';
 import { hasBalanceToStart } from '../services/wallet.service';
 import { ChargePoint } from '../models/ChargePoint';
 import { Client } from '../models/Client';
-import { driverTariff, feePercentForStation, resolveFeePercent } from '../services/pricing.service';
+import {
+  currentStationTariff,
+  driverTariff,
+  feePercentForStation,
+  resolveFeePercent,
+  type TariffZone,
+} from '../services/pricing.service';
 import { Connector } from '../models/Connector';
 import { IdTag } from '../models/IdTag';
 import { Transaction } from '../models/Transaction';
@@ -70,6 +76,7 @@ interface RawChargePoint {
   latitude?: number;
   longitude?: number;
   tariffPerKwh?: number;
+  tariffZones?: TariffZone[];
   feePercent?: number;
   clientId?: unknown;
   chargePointVendor?: string;
@@ -207,9 +214,11 @@ function toStation(cp: RawChargePoint, rawConnectors: RawConnector[], feePercent
     latitude: cp.latitude,
     longitude: cp.longitude,
     // What the driver pays per kWh, Eplug's fee included; every client shows
-    // and estimates with this. The parts are there for a breakdown.
-    tariffPerKwh: driverTariff(cp.tariffPerKwh, feePercent),
-    baseTariffPerKwh: cp.tariffPerKwh,
+    // and estimates with this. Resolved live against the station's time-of-day
+    // zones, so a station with a cheaper night rate shows it the moment the
+    // zone starts — nothing has to push an update for this to change.
+    tariffPerKwh: driverTariff(currentStationTariff(cp), feePercent),
+    baseTariffPerKwh: currentStationTariff(cp),
     feePercent,
     vendor: cp.chargePointVendor,
     model: cp.chargePointModel,

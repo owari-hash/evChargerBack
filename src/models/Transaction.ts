@@ -37,7 +37,24 @@ const transactionSchema = new Schema(
     vehicleBatteryKwh: { type: Number },
     vehicleData: { type: Schema.Types.Mixed },
 
+    /** The session's blended rate once billed — see `tariffZones` below. */
     tariffPerKwh: { type: Number },
+    /**
+     * The station's time-of-day zones as they stood when this session
+     * started — snapshotted so a schedule change never reprices a session
+     * already running. Absent/empty means the flat `tariffPerKwh` applied for
+     * the whole session, same as before this field existed.
+     */
+    tariffZones: {
+      type: [
+        {
+          _id: false,
+          startMinute: { type: Number },
+          endMinute: { type: Number },
+          tariffPerKwh: { type: Number },
+        },
+      ],
+    },
     /** Total the driver pays: energyCost + feeAmount. */
     cost: { type: Number },
     /** kWh × tariffPerKwh. */

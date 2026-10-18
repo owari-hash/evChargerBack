@@ -15,6 +15,7 @@ import { OcppMessageLog, CommandLog } from '../../models/Log';
 import { REGISTRATION_STATUSES } from '../../models/enums';
 import { connectionManager } from '../../ocpp/manager';
 import { connectorQrUrl } from '../../services/connector.service';
+import { validateTariffZones } from '../../services/pricing.service';
 import {
   asyncHandler,
   paginate,
@@ -123,6 +124,16 @@ const createSchema = z.object({
   longitude: z.number().optional(),
   address: z.string().optional(),
   tariffPerKwh: z.number().nonnegative().optional(),
+  /** Time-of-day pricing; see the model for how zones are matched. */
+  tariffZones: z
+    .array(
+      z.object({
+        startMinute: z.number().int().min(0).max(1439),
+        endMinute: z.number().int().min(1).max(1440),
+        tariffPerKwh: z.number().nonnegative(),
+      }),
+    )
+    .optional(),
   /** Overrides the client / network fee. */
   feePercent: z.number().min(0).max(100).optional(),
   /** Overrides the client's e-barimt merchant. */
@@ -149,6 +160,10 @@ chargePointsRouter.post(
       clientId = body.clientId;
     }
     await assertClientRefs(body.linkedClientIds);
+    if (body.tariffZones?.length) {
+      const zoneError = validateTariffZones(body.tariffZones);
+      if (zoneError) throw badRequest(zoneError);
+    }
 
     // Explicit null: no credentials at all, for a station that sends none.
     // Omitted: generate one satisfying A00.FR.205 (>= 16 bytes, hex, <= 40 chars).
@@ -174,6 +189,7 @@ chargePointsRouter.post(
       longitude: body.longitude,
       address: body.address,
       tariffPerKwh: body.tariffPerKwh,
+      tariffZones: body.tariffZones ?? [],
       feePercent: body.feePercent,
       ebarimtMerchantId: body.ebarimtMerchantId || undefined,
       tags: body.tags ?? [],
@@ -257,6 +273,16 @@ const updateSchema = createSchema.partial().omit({ id: true }).extend({
   latitude: z.number().min(-90).max(90).nullable().optional(),
   longitude: z.number().min(-180).max(180).nullable().optional(),
   tariffPerKwh: z.number().nonnegative().nullable().optional(),
+  tariffZones: z
+    .array(
+      z.object({
+        startMinute: z.number().int().min(0).max(1439),
+        endMinute: z.number().int().min(1).max(1440),
+        tariffPerKwh: z.number().nonnegative(),
+      }),
+    )
+    .nullable()
+    .optional(),
   feePercent: z.number().min(0).max(100).nullable().optional(),
   ebarimtMerchantId: z.string().nullable().optional(),
 });
@@ -339,8 +365,20 @@ chargePointsRouter.patch(
       }
     }
 
+    if (body.tariffZones !== undefined) {
+      if (body.tariffZones === null || body.tariffZones.length === 0) {
+        $set.tariffZones = [];
+      } else {
+        const zoneError = validateTariffZones(body.tariffZones);
+        if (zoneError) throw badRequest(zoneError);
+        $set.tariffZones = body.tariffZones;
+      }
+    }
+
     for (const [key, value] of Object.entries(body)) {
-      if (key === 'authorizationKey' || key === 'clientId' || key === 'linkedClientIds') continue;
+      if (key === 'authorizationKey' || key === 'clientId' || key === 'linkedClientIds' || key === 'tariffZones') {
+        continue;
+      }
       if (value === null) $unset[key] = '';
       else $set[key] = value;
     }
