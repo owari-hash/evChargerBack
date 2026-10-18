@@ -546,3 +546,107 @@ chargePointsRouter.post(
     res.json({ ok: true });
   }),
 );
+
+/**
+ * Clean up all simulated / test stations (FLEET-SIM-*, CP-SIM-*, etc.)
+ * while strictly protecting real/main production stations (e.g. Baganuur).
+ */
+chargePointsRouter.post(
+  '/cleanup-simulators',
+  requireOperator,
+  asyncHandler(async (req, res) => {
+    // Explicitly protected main stations: Baganuur / Багануур ТӨХК
+    const protectedFilter = {
+      $or: [
+        { cpId: { $regex: /^baganuur$/i } },
+        { name: { $regex: /багануур/i } },
+        { _id: new Types.ObjectId('6acdecc7c2751d56f29271ae') },
+      ],
+    };
+    const protectedStations = await ChargePoint.find(protectedFilter).select('_id cpId name').lean();
+    const protectedIds = protectedStations.map((s) => s._id);
+
+    // Simulator mock patterns
+    const mockFilter = {
+      _id: { $nin: protectedIds },
+      $or: [
+        { cpId: { $regex: /^(FLEET-SIM|CP-SIM|SIM-|Rey-)/i } },
+        { chargePointVendor: { $regex: /^(EPlug-Fleet|EPlug-SimWeb|SimVendor|Learn EV)/i } },
+      ],
+    };
+
+    const toDelete = await ChargePoint.find(mockFilter).select('_id cpId name').lean();
+    const deleteIds = toDelete.map((s) => s._id);
+
+    if (deleteIds.length > 0) {
+      for (const s of toDelete) {
+        const conn = connectionManager.get(s.cpId);
+        if (conn) conn.close(1000, 'Station deleted');
+      }
+
+      await Promise.all([
+        ChargePoint.deleteMany({ _id: { $in: deleteIds } }),
+        Connector.deleteMany({ chargePointId: { $in: deleteIds } }),
+        ConfigurationKey.deleteMany({ chargePointId: { $in: deleteIds } }),
+        OcppMessageLog.deleteMany({ chargePointId: { $in: deleteIds } }),
+        CommandLog.deleteMany({ chargePointId: { $in: deleteIds } }),
+      ]);
+    }
+
+    res.json({
+      deletedCount: deleteIds.length,
+      deletedStations: toDelete.map((s) => ({ id: String(s._id), cpId: s.cpId, name: s.name })),
+      preservedStations: protectedStations.map((s) => ({ id: String(s._id), cpId: s.cpId, name: s.name })),
+    });
+  }),
+);
+
+/** Delete multiple stations by their IDs. */
+chargePointsRouter.post(
+  '/batch-delete',
+  requireOperator,
+  asyncHandler(async (req, res) => {
+    const ids: string[] = Array.isArray(req.body.ids) ? req.body.ids : [];
+    if (!ids.length) throw badRequest('No station IDs provided');
+
+    const validIds = ids.filter((id) => isValidObjectId(id)).map((id) => new Types.ObjectId(id));
+    const stations = await ChargePoint.find({ _id: { $in: validIds } }).lean();
+
+    for (const s of stations) {
+      const conn = connectionManager.get(s.cpId);
+      if (conn) conn.close(1000, 'Station deleted');
+    }
+
+    const deleteIds = stations.map((s) => s._id);
+    await Promise.all([
+      ChargePoint.deleteMany({ _id: { $in: deleteIds } }),
+      Connector.deleteMany({ chargePointId: { $in: deleteIds } }),
+      ConfigurationKey.deleteMany({ chargePointId: { $in: deleteIds } }),
+      OcppMessageLog.deleteMany({ chargePointId: { $in: deleteIds } }),
+      CommandLog.deleteMany({ chargePointId: { $in: deleteIds } }),
+    ]);
+
+    res.json({ deletedCount: deleteIds.length });
+  }),
+);
+
+/** Delete a single station by id or cpId. */
+chargePointsRouter.delete(
+  '/:id',
+  requireOperator,
+  asyncHandler(async (req, res) => {
+    const cp = await requireChargePoint(req.params.id!);
+    const conn = connectionManager.get(cp.cpId);
+    if (conn) conn.close(1000, 'Station deleted');
+
+    await Promise.all([
+      ChargePoint.deleteOne({ _id: cp._id }),
+      Connector.deleteMany({ chargePointId: cp._id }),
+      ConfigurationKey.deleteMany({ chargePointId: cp._id }),
+      OcppMessageLog.deleteMany({ chargePointId: cp._id }),
+      CommandLog.deleteMany({ chargePointId: cp._id }),
+    ]);
+
+    res.json({ ok: true, deletedId: String(cp._id), cpId: cp.cpId });
+  }),
+);
