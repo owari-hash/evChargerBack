@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { isValidObjectId, Types } from 'mongoose';
 import { cpIdsFor, requireChargePointRef } from '../../lib/chargePointRef';
 import { z } from 'zod';
 import { ChargePoint } from '../../models/ChargePoint';
@@ -172,8 +173,38 @@ statsRouter.use(requireAuth);
 
 statsRouter.get(
   '/overview',
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
     const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const isClient = req.user?.role === 'CLIENT' && req.user.clientId;
+    const clientOid = isClient ? new Types.ObjectId(req.user!.clientId) : null;
+
+    let stationIds: Types.ObjectId[] | null = null;
+    if (clientOid) {
+      const clientStations = await ChargePoint.find({
+        $or: [{ clientId: clientOid }, { linkedClientIds: clientOid }],
+      })
+        .select('_id')
+        .lean();
+      stationIds = clientStations.map((s) => s._id as Types.ObjectId);
+    }
+
+    const cpFilter: Record<string, unknown> = clientOid ? { _id: { $in: stationIds } } : {};
+    const cpOnlineFilter: Record<string, unknown> = { isOnline: true, ...cpFilter };
+    const connMatch: Record<string, unknown> = { connectorId: { $gt: 0 } };
+    if (stationIds) connMatch.chargePointId = { $in: stationIds };
+
+    const txActiveFilter: Record<string, unknown> = { status: 'Active' };
+    const tx24hFilter: Record<string, unknown> = { startTimestamp: { $gte: since24h } };
+    const txAggMatch: Record<string, unknown> = {
+      status: 'Completed',
+      stopTimestamp: { $gte: since24h },
+    };
+
+    if (clientOid) {
+      txActiveFilter.clientId = clientOid;
+      tx24hFilter.clientId = clientOid;
+      txAggMatch.clientId = clientOid;
+    }
 
     const [
       chargePoints,
@@ -184,16 +215,16 @@ statsRouter.get(
       energyAgg,
       criticalEvents,
     ] = await Promise.all([
-      ChargePoint.countDocuments({}),
-      ChargePoint.countDocuments({ isOnline: true }),
+      ChargePoint.countDocuments(cpFilter),
+      ChargePoint.countDocuments(cpOnlineFilter),
       Connector.aggregate([
-        { $match: { connectorId: { $gt: 0 } } },
+        { $match: connMatch },
         { $group: { _id: '$status', count: { $sum: 1 } } },
       ]),
-      Transaction.countDocuments({ status: 'Active' }),
-      Transaction.countDocuments({ startTimestamp: { $gte: since24h } }),
+      Transaction.countDocuments(txActiveFilter),
+      Transaction.countDocuments(tx24hFilter),
       Transaction.aggregate([
-        { $match: { status: 'Completed', stopTimestamp: { $gte: since24h } } },
+        { $match: txAggMatch },
         {
           $group: {
             _id: null,
@@ -203,7 +234,7 @@ statsRouter.get(
           },
         },
       ]),
-      SecurityEvent.countDocuments({ isCritical: true, acknowledged: false }),
+      clientOid ? 0 : SecurityEvent.countDocuments({ isCritical: true, acknowledged: false }),
     ]);
 
     res.json({
@@ -239,6 +270,9 @@ statsRouter.get(
       status: 'Completed',
       stopTimestamp: { $gte: since },
     };
+    if (req.user?.role === 'CLIENT' && req.user.clientId) {
+      match.clientId = new Types.ObjectId(req.user.clientId);
+    }
     if (q.chargePointId) match.chargePointId = await requireChargePointRef(q.chargePointId);
 
     const data = await Transaction.aggregate([
@@ -272,8 +306,15 @@ statsRouter.get(
   asyncHandler(async (req, res) => {
     const q = req.query as unknown as z.infer<typeof seriesQuery>;
     const since = new Date(Date.now() - q.days * 24 * 60 * 60 * 1000);
+    const topMatch: Record<string, unknown> = {
+      status: 'Completed',
+      stopTimestamp: { $gte: since },
+    };
+    if (req.user?.role === 'CLIENT' && req.user.clientId) {
+      topMatch.clientId = new Types.ObjectId(req.user.clientId);
+    }
     const data = await Transaction.aggregate([
-      { $match: { status: 'Completed', stopTimestamp: { $gte: since } } },
+      { $match: topMatch },
       {
         $group: {
           _id: '$chargePointId',
@@ -326,7 +367,18 @@ connectorsRouter.get(
       status?: string;
     };
     const filter: Record<string, unknown> = {};
-    if (q.chargePointId) filter.chargePointId = await requireChargePointRef(q.chargePointId);
+
+    if (req.user?.role === 'CLIENT' && req.user.clientId) {
+      const clientOid = new Types.ObjectId(req.user.clientId);
+      const clientStations = await ChargePoint.find({
+        $or: [{ clientId: clientOid }, { linkedClientIds: clientOid }],
+      })
+        .select('_id')
+        .lean();
+      filter.chargePointId = { $in: clientStations.map((s) => s._id) };
+    } else if (q.chargePointId) {
+      filter.chargePointId = await requireChargePointRef(q.chargePointId);
+    }
     if (q.status) filter.status = q.status;
 
     const { skip, limit } = paginate(q);
