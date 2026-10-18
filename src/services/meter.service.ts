@@ -25,6 +25,7 @@ interface Extracted {
 }
 
 const PHASES = ['L1', 'L2', 'L3'];
+const lastRemoteStopAttempts = new Map<number, number>();
 
 /**
  * The station total for one measurand. Stations often list per-phase values
@@ -148,8 +149,6 @@ export async function storeMeterValues(
       // Check driver wallet balance to preemptively stop session before running into negative balance/debt
       if (
         env.WALLET_ENABLED &&
-        !env.WALLET_ALLOW_NEGATIVE &&
-        !tx.stoppedRemotely &&
         typeof tx.cost === 'number' &&
         tx.cost > 0
       ) {
@@ -160,32 +159,37 @@ export async function storeMeterValues(
             const balance = await balanceOf(owner);
             // If cost has reached or is about to exceed available balance (margin: 50 MNT)
             if (tx.cost >= balance - 50) {
-              ocppLogger.warn(
-                {
-                  txId: tx._id,
-                  cpId,
-                  idTag: tx.idTag,
-                  cost: tx.cost,
-                  balance,
-                },
-                'Driver wallet balance exhausted; issuing RemoteStopTransaction to prevent negative balance',
-              );
-              tx.stoppedRemotely = true;
-              await tx.save();
+              const now = Date.now();
+              const lastAttempt = lastRemoteStopAttempts.get(tx._id) ?? 0;
+              if (now - lastAttempt > 4000) {
+                lastRemoteStopAttempts.set(tx._id, now);
+                ocppLogger.warn(
+                  {
+                    txId: tx._id,
+                    cpId,
+                    idTag: tx.idTag,
+                    cost: tx.cost,
+                    balance,
+                  },
+                  'Driver wallet balance exhausted; issuing RemoteStopTransaction to prevent negative balance',
+                );
+                tx.stoppedRemotely = true;
+                await tx.save();
 
-              connectionManager
-                .send<{ status: string }>(
-                  cpId,
-                  'RemoteStopTransaction',
-                  { transactionId: tx._id },
-                  'balance-enforcer',
-                )
-                .catch((err) => {
-                  ocppLogger.error(
-                    { err: (err as Error).message, txId: tx._id, cpId },
-                    'Failed to send RemoteStopTransaction for exhausted balance',
-                  );
-                });
+                connectionManager
+                  .send<{ status: string }>(
+                    cpId,
+                    'RemoteStopTransaction',
+                    { transactionId: tx._id },
+                    'balance-enforcer',
+                  )
+                  .catch((err) => {
+                    ocppLogger.error(
+                      { err: (err as Error).message, txId: tx._id, cpId },
+                      'Failed to send RemoteStopTransaction for exhausted balance',
+                    );
+                  });
+              }
             }
           }
         } catch (err) {

@@ -39,7 +39,7 @@ export function walletConfig(): WalletConfig {
     maxTopUp: env.WALLET_TOPUP_MAX,
     minStartBalance: env.WALLET_MIN_START_BALANCE,
     requireBalanceToStart: env.WALLET_REQUIRE_BALANCE_TO_START,
-    allowNegative: env.WALLET_ALLOW_NEGATIVE,
+    allowNegative: false,
     topUpEnabled: env.QPAY_ENABLED,
   };
 }

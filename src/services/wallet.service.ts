@@ -416,23 +416,18 @@ export async function chargeSessionToWallet(input: {
     if (!owner) return null;
 
     const kwh = ((input.energyWh ?? 0) / 1000).toFixed(2);
-    const allowNegative = env.WALLET_ALLOW_NEGATIVE;
-
-    let debitAmount = amount;
-    // When allowNegative is false (default), strictly ensure wallet balance never drops below 0.
+    // Strictly ensure driver wallet balance never drops below 0.
     // Clamp the debit amount to whatever positive balance exists in the wallet.
-    if (!allowNegative) {
-      const current = await findWallet(owner);
-      const currentBalance = Math.max(0, current?.balance ?? 0);
-      debitAmount = Math.min(amount, currentBalance);
+    const current = await findWallet(owner);
+    const currentBalance = Math.max(0, current?.balance ?? 0);
+    const debitAmount = Math.min(amount, currentBalance);
 
-      if (debitAmount <= 0) {
-        walletLogger.warn(
-          { transactionId: input.transactionId, idTag: input.idTag, balance: current?.balance, amount },
-          'wallet has 0 balance; skipping debit to strictly prevent negative balance',
-        );
-        return null;
-      }
+    if (debitAmount <= 0) {
+      walletLogger.warn(
+        { transactionId: input.transactionId, idTag: input.idTag, balance: current?.balance, amount },
+        'wallet has 0 balance; skipping debit to strictly prevent negative balance',
+      );
+      return null;
     }
 
     return await debit(
