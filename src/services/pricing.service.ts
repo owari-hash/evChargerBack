@@ -20,6 +20,7 @@ const MN_OFFSET_MINUTES = 8 * 60;
 const DAY_MS = 24 * 60 * 60_000;
 
 export interface TariffZone {
+  name?: string;
   /** Minutes since local midnight, inclusive. */
   startMinute: number;
   /** Minutes since local midnight, exclusive. Always > startMinute — a zone

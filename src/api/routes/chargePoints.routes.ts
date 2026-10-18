@@ -131,6 +131,7 @@ const createSchema = z.object({
   tariffZones: z
     .array(
       z.object({
+        name: z.string().trim().max(100).optional(),
         startMinute: z.number().int().min(0).max(1439),
         endMinute: z.number().int().min(1).max(1440),
         tariffPerKwh: z.number().nonnegative(),
@@ -287,6 +288,7 @@ const updateSchema = createSchema.partial().omit({ id: true }).extend({
   tariffZones: z
     .array(
       z.object({
+        name: z.string().trim().max(100).optional(),
         startMinute: z.number().int().min(0).max(1439),
         endMinute: z.number().int().min(1).max(1440),
         tariffPerKwh: z.number().nonnegative(),

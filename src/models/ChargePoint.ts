@@ -98,6 +98,7 @@ const chargePointSchema = new Schema(
       type: [
         {
           _id: false,
+          name: { type: String, trim: true },
           startMinute: { type: Number, required: true, min: 0, max: 1439 },
           endMinute: { type: Number, required: true, min: 1, max: 1440 },
           tariffPerKwh: { type: Number, required: true, min: 0 },

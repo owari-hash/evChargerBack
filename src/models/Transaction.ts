@@ -49,6 +49,7 @@ const transactionSchema = new Schema(
       type: [
         {
           _id: false,
+          name: { type: String, trim: true },
           startMinute: { type: Number },
           endMinute: { type: Number },
           tariffPerKwh: { type: Number },
