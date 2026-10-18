@@ -18,7 +18,7 @@ import { asyncHandler, requireAdmin, requireAuth, requireOperator, validate } fr
  * a session was refunded after being paid out.
  */
 export const settlementsRouter = Router();
-settlementsRouter.use(requireAuth, requireOperator);
+settlementsRouter.use(requireAuth);
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -81,6 +81,9 @@ settlementsRouter.get(
   validate(summaryQuery, 'query'),
   asyncHandler(async (req, res) => {
     const q = req.query as unknown as z.infer<typeof summaryQuery>;
+    if (req.user?.role === 'CLIENT') {
+      q.clientId = req.user.clientId;
+    }
     if (q.clientId && !isValidObjectId(q.clientId)) throw badRequest('Invalid clientId');
 
     const [period, allTime, paid, clients] = await Promise.all([
@@ -153,6 +156,9 @@ settlementsRouter.get(
   validate(listQuery, 'query'),
   asyncHandler(async (req, res) => {
     const q = req.query as unknown as z.infer<typeof listQuery>;
+    if (req.user?.role === 'CLIENT') {
+      q.clientId = req.user.clientId;
+    }
     if (q.clientId && !isValidObjectId(q.clientId)) throw badRequest('Invalid clientId');
     const rows = await Settlement.find(q.clientId ? { clientId: q.clientId } : {})
       .sort({ paidAt: -1 })

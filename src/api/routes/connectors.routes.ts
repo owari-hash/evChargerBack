@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { isValidObjectId } from 'mongoose';
 import { z } from 'zod';
-import { badRequest, conflict, notFound } from '../../lib/errors';
+import { badRequest, conflict, forbidden, notFound } from '../../lib/errors';
 import { isConnectorCode } from '../../lib/connectorCode';
 import { ChargePoint } from '../../models/ChargePoint';
 import { Connector } from '../../models/Connector';
@@ -43,6 +43,14 @@ connectorAdminRouter.get(
   asyncHandler(async (req, res) => {
     const { id } = req.params;
     if (!isValidObjectId(id)) throw badRequest('Invalid charge point id');
+
+    if (req.user?.role === 'CLIENT') {
+      const cp = await ChargePoint.findById(id).select('clientId linkedClientIds').lean();
+      if (!cp) throw notFound('Charge point not found');
+      const isOwner = String(cp.clientId ?? '') === String(req.user?.clientId);
+      const isLinked = (cp.linkedClientIds ?? []).some((cid) => String(cid) === String(req.user?.clientId));
+      if (!isOwner && !isLinked) throw forbidden('Access denied');
+    }
 
     const rows = await Connector.find({ chargePointId: id })
       .sort({ connectorId: 1 })

@@ -3,8 +3,9 @@ import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { unauthorized, conflict, notFound } from '../../lib/errors';
 import { User, hashPassword, verifyPassword } from '../../models/User';
+import { Client } from '../../models/Client';
 import { USER_ROLES } from '../../models/enums';
-import { asyncHandler, requireAdmin, requireAuth, signToken, validate } from '../middleware';
+import { asyncHandler, requireAdmin, requireAuth, signToken, validate, type AuthPrincipal } from '../middleware';
 
 export const authRouter = Router();
 
@@ -31,10 +32,26 @@ authRouter.post(
     if (!user || !user.isActive || !(await verifyPassword(password, user.passwordHash))) {
       throw unauthorized('Invalid email or password');
     }
+
+    let clientName: string | undefined;
+    if (user.clientId) {
+      const client = await Client.findById(user.clientId).select('name isActive').lean();
+      if (!client || !client.isActive) {
+        throw unauthorized('Харилцагчийн бүртгэл идэвхгүй байна');
+      }
+      clientName = client.name;
+    }
+
     user.lastLoginAt = new Date();
     await user.save();
 
-    const principal = { id: String(user._id), email: user.email, role: user.role };
+    const principal: AuthPrincipal = {
+      id: String(user._id),
+      email: user.email,
+      role: user.role,
+      clientId: user.clientId ? String(user.clientId) : undefined,
+      clientName,
+    };
     res.json({ token: signToken(principal), user: principal });
   }),
 );
@@ -43,7 +60,7 @@ authRouter.get(
   '/me',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const user = await User.findById(req.user!.id);
+    const user = await User.findById(req.user!.id).populate('clientId', 'name businessRegister feePercent');
     if (!user) throw notFound('User not found');
     res.json(user.toJSON());
   }),
@@ -76,9 +93,10 @@ authRouter.delete(
 
 const createUserSchema = z.object({
   email: z.string().email(),
-  password: z.string().min(8),
+  password: z.string().min(6),
   name: z.string().optional(),
   role: z.enum(USER_ROLES).default('VIEWER'),
+  clientId: z.string().optional().nullable(),
 });
 
 authRouter.post(
@@ -96,6 +114,7 @@ authRouter.post(
       passwordHash: await hashPassword(body.password),
       name: body.name,
       role: body.role,
+      clientId: body.clientId || undefined,
       guidePending: true,
     });
     res.status(201).json(user.toJSON());
@@ -107,15 +126,16 @@ authRouter.get(
   requireAuth,
   requireAdmin,
   asyncHandler(async (_req, res) => {
-    res.json(await User.find().sort({ createdAt: -1 }));
+    res.json(await User.find().populate('clientId', 'name').sort({ createdAt: -1 }));
   }),
 );
 
 const updateUserSchema = z.object({
   name: z.string().optional(),
   role: z.enum(USER_ROLES).optional(),
+  clientId: z.string().optional().nullable(),
   isActive: z.boolean().optional(),
-  password: z.string().min(8).optional(),
+  password: z.string().min(6).optional(),
 });
 
 authRouter.patch(
@@ -128,6 +148,7 @@ authRouter.patch(
     const update: Record<string, unknown> = {};
     if (body.name !== undefined) update.name = body.name;
     if (body.role !== undefined) update.role = body.role;
+    if (body.clientId !== undefined) update.clientId = body.clientId || null;
     if (body.isActive !== undefined) update.isActive = body.isActive;
     if (body.password) update.passwordHash = await hashPassword(body.password);
 

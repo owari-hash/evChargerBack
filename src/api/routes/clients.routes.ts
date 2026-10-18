@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { isValidObjectId, Types } from 'mongoose';
-import { badRequest, notFound } from '../../lib/errors';
+import { badRequest, conflict, forbidden, notFound } from '../../lib/errors';
 import { EbarimtMerchant } from '../../models/EbarimtMerchant';
 import { Client } from '../../models/Client';
+import { User, hashPassword } from '../../models/User';
 import { ChargePoint } from '../../models/ChargePoint';
 import { Connector } from '../../models/Connector';
 import { connectionManager } from '../../ocpp/manager';
@@ -30,6 +31,7 @@ const clientInputSchema = z.object({
   contactPerson: z.string().max(100).optional().nullable(),
   phone: z.string().max(50).optional().nullable(),
   email: z.string().email('Имэйл хаяг буруу байна').optional().nullable().or(z.literal('')),
+  password: z.string().min(6, 'Нууц үг хамгийн багадаа 6 тэмдэгт байх ёстой').optional().nullable(),
   address: z.string().max(300).optional().nullable(),
   description: z.string().max(1000).optional().nullable(),
   isActive: z.boolean().default(true),
@@ -62,17 +64,22 @@ clientsRouter.get(
     const q = req.query as unknown as z.infer<typeof listQuery>;
     const filter: Record<string, unknown> = {};
 
-    if (q.search) {
-      filter.$or = [
-        { name: { $regex: q.search, $options: 'i' } },
-        { businessRegister: { $regex: q.search, $options: 'i' } },
-        { contactPerson: { $regex: q.search, $options: 'i' } },
-        { phone: { $regex: q.search, $options: 'i' } },
-      ];
-    }
+    if (req.user?.role === 'CLIENT') {
+      if (!req.user.clientId) throw forbidden('Client ID missing');
+      filter._id = new Types.ObjectId(req.user.clientId);
+    } else {
+      if (q.search) {
+        filter.$or = [
+          { name: { $regex: q.search, $options: 'i' } },
+          { businessRegister: { $regex: q.search, $options: 'i' } },
+          { contactPerson: { $regex: q.search, $options: 'i' } },
+          { phone: { $regex: q.search, $options: 'i' } },
+        ];
+      }
 
-    if (q.status === 'active') filter.isActive = true;
-    else if (q.status === 'inactive') filter.isActive = false;
+      if (q.status === 'active') filter.isActive = true;
+      else if (q.status === 'inactive') filter.isActive = false;
+    }
 
     const { skip, limit } = paginate(q);
     const [clients, total] = await Promise.all([
@@ -120,6 +127,10 @@ clientsRouter.get(
     const { id } = req.params;
     if (!isValidObjectId(id)) throw badRequest('Invalid client id');
 
+    if (req.user?.role === 'CLIENT' && String(req.user.clientId) !== id) {
+      throw forbidden('Та зөвхөн өөрийн байгууллагын мэдээллийг харах эрхтэй');
+    }
+
     const client = await Client.findById(id).lean();
     if (!client) throw notFound('Client not found');
 
@@ -143,11 +154,22 @@ clientsRouter.get(
         .sort((a, b) => a.connectorId - b.connectorId),
     }));
 
+    const userAccount = await User.findOne({ clientId: client._id })
+      .select('email isActive lastLoginAt')
+      .lean();
+
     res.json({
       ...client,
       id: String(client._id),
       stationCount: populatedStations.length,
       stations: populatedStations,
+      loginAccount: userAccount
+        ? {
+            email: userAccount.email,
+            isActive: userAccount.isActive,
+            lastLoginAt: userAccount.lastLoginAt,
+          }
+        : null,
     });
   }),
 );
@@ -174,6 +196,21 @@ clientsRouter.post(
       payoutAccount: body.payoutAccount ?? undefined,
     });
 
+    if (body.password && body.email) {
+      await User.findOneAndUpdate(
+        { email: body.email.toLowerCase() },
+        {
+          email: body.email.toLowerCase(),
+          passwordHash: await hashPassword(body.password),
+          name: created.name,
+          role: 'CLIENT',
+          clientId: created._id,
+          isActive: created.isActive ?? true,
+        },
+        { upsert: true, new: true },
+      );
+    }
+
     res.status(201).json({
       ...created.toJSON(),
       id: String(created._id),
@@ -196,6 +233,7 @@ clientsRouter.patch(
     const $unset: Record<string, ''> = {};
 
     for (const [key, value] of Object.entries(body)) {
+      if (key === 'password') continue;
       if (value === null || value === '') {
         $unset[key] = '';
       } else if (value !== undefined) {
@@ -210,12 +248,86 @@ clientsRouter.patch(
     const updated = await Client.findByIdAndUpdate(id, update, { new: true }).lean();
     if (!updated) throw notFound('Client not found');
 
+    if (body.password) {
+      const email = body.email || updated.email;
+      if (email) {
+        await User.findOneAndUpdate(
+          { $or: [{ clientId: updated._id }, { email: email.toLowerCase() }] },
+          {
+            email: email.toLowerCase(),
+            passwordHash: await hashPassword(body.password),
+            name: updated.name,
+            role: 'CLIENT',
+            clientId: updated._id,
+            isActive: updated.isActive,
+          },
+          { upsert: true, new: true },
+        );
+      }
+    }
+
     const stationCount = await ChargePoint.countDocuments({ clientId: updated._id });
 
     res.json({
       ...updated,
       id: String(updated._id),
       stationCount,
+    });
+  }),
+);
+
+const clientLoginAccountSchema = z.object({
+  email: z.string().email('Имэйл хаяг буруу байна'),
+  password: z.string().min(6, 'Нууц үг хамгийн багадаа 6 тэмдэгт байх ёстой'),
+  isActive: z.boolean().default(true),
+});
+
+clientsRouter.post(
+  '/:id/login-account',
+  requireOperator,
+  validate(clientLoginAccountSchema),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    if (!isValidObjectId(id)) throw badRequest('Invalid client id');
+
+    const client = await Client.findById(id);
+    if (!client) throw notFound('Client not found');
+
+    const body = req.body as z.infer<typeof clientLoginAccountSchema>;
+    const email = body.email.toLowerCase();
+
+    const existing = await User.findOne({ email });
+    if (existing && String(existing.clientId) !== String(client._id)) {
+      throw conflict('Энэ имэйл хаяг дээр өөр хэрэглэгч бүртгэлтэй байна');
+    }
+
+    const passwordHash = await hashPassword(body.password);
+    const user = await User.findOneAndUpdate(
+      { $or: [{ clientId: client._id }, { email }] },
+      {
+        email,
+        passwordHash,
+        name: client.name,
+        role: 'CLIENT',
+        clientId: client._id,
+        isActive: body.isActive ?? true,
+      },
+      { upsert: true, new: true },
+    );
+
+    if (!client.email) {
+      client.email = email;
+      await client.save();
+    }
+
+    res.json({
+      ok: true,
+      loginAccount: {
+        id: String(user._id),
+        email: user.email,
+        isActive: user.isActive,
+        lastLoginAt: user.lastLoginAt,
+      },
     });
   }),
 );

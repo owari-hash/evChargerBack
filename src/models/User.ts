@@ -8,6 +8,7 @@ const userSchema = new Schema(
     passwordHash: { type: String, required: true, select: false },
     name: { type: String },
     role: { type: String, enum: USER_ROLES, default: 'VIEWER', index: true },
+    clientId: { type: Schema.Types.ObjectId, ref: 'Client', index: true },
     isActive: { type: Boolean, default: true },
     lastLoginAt: { type: Date },
     // True until a new operator finishes (or skips) the admin console's
@@ -20,6 +21,8 @@ const userSchema = new Schema(
     toJSON: {
       virtuals: true,
       transform(_doc, ret: Record<string, unknown>) {
+        ret.id = String(ret._id);
+        if (ret.clientId) ret.clientId = String(ret.clientId);
         delete ret.passwordHash;
         delete ret.__v;
         return ret;

@@ -34,6 +34,7 @@ import { appReleasesRouter } from './routes/appReleases.routes';
 import { clientsRouter } from './routes/clients.routes';
 import { connectorAdminRouter } from './routes/connectors.routes';
 import { settlementsRouter } from './routes/settlements.routes';
+import { reportsRouter } from './routes/reports.routes';
 import { vehicleDetectionsRouter } from './routes/vehicleDetections.routes';
 
 export function createApp(): Express {
@@ -166,6 +167,7 @@ export function createApp(): Express {
   // Mounted at the API root: it owns both /charge-points/:id/connectors and /connectors/:id.
   api.use('/', connectorAdminRouter);
   api.use('/settlements', settlementsRouter);
+  api.use('/reports', reportsRouter);
   api.use('/security', securityRouter);
   api.use('/stats', statsRouter);
   api.use('/events', eventsRouter);

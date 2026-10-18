@@ -1,4 +1,4 @@
-export const USER_ROLES = ['ADMIN', 'OPERATOR', 'VIEWER'] as const;
+export const USER_ROLES = ['ADMIN', 'OPERATOR', 'VIEWER', 'CLIENT'] as const;
 export type UserRole = (typeof USER_ROLES)[number];
 
 export const REGISTRATION_STATUSES = ['Accepted', 'Pending', 'Rejected'] as const;

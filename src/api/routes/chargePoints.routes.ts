@@ -1,9 +1,9 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { randomBytes } from 'node:crypto';
-import { isValidObjectId } from 'mongoose';
+import { isValidObjectId, Types } from 'mongoose';
 import { z } from 'zod';
-import { badRequest, notFound, conflict } from '../../lib/errors';
+import { badRequest, notFound, conflict, forbidden } from '../../lib/errors';
 import { requireChargePoint } from '../../lib/chargePointRef';
 import { ChargePoint } from '../../models/ChargePoint';
 import { EbarimtMerchant } from '../../models/EbarimtMerchant';
@@ -51,7 +51,10 @@ chargePointsRouter.get(
       ];
     }
     if (q.online) filter.isOnline = q.online === 'true';
-    if (q.clientId) {
+    if (req.user?.role === 'CLIENT') {
+      const cId = new Types.ObjectId(req.user.clientId);
+      filter.$or = [{ clientId: cId }, { linkedClientIds: cId }];
+    } else if (q.clientId) {
       if (q.clientId === 'none') {
         filter.clientId = null;
       } else if (isValidObjectId(q.clientId)) {
@@ -224,6 +227,14 @@ chargePointsRouter.get(
   asyncHandler(async (req, res) => {
     // Callers may hold either identifier, so both resolve.
     const cp = (await requireChargePoint(req.params.id!)).toJSON();
+
+    if (req.user?.role === 'CLIENT') {
+      const isOwner = String(cp.clientId ?? '') === String(req.user?.clientId);
+      const isLinked = (cp.linkedClientIds ?? []).some((id: unknown) => String(id) === String(req.user?.clientId));
+      if (!isOwner && !isLinked) {
+        throw forbidden('Та зөвхөн өөрийн станцын мэдээллийг харах эрхтэй');
+      }
+    }
 
     const [connectors, activeTransactions, configuration, client, linkedClients] = await Promise.all([
       Connector.find({ chargePointId: cp._id }).sort({ connectorId: 1 }).lean(),

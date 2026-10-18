@@ -8,6 +8,8 @@ export interface AuthPrincipal {
   id: string;
   email: string;
   role: UserRole;
+  clientId?: string;
+  clientName?: string;
 }
 
 declare module 'express-serve-static-core' {
@@ -39,14 +41,20 @@ export function requireAuth(req: Request, _res: Response, next: NextFunction): v
 
   try {
     const decoded = jwt.verify(header.slice(7).trim(), env.JWT_SECRET) as AuthPrincipal;
-    req.user = { id: decoded.id, email: decoded.email, role: decoded.role };
+    req.user = {
+      id: decoded.id,
+      email: decoded.email,
+      role: decoded.role,
+      clientId: decoded.clientId,
+      clientName: decoded.clientName,
+    };
     next();
   } catch {
     next(unauthorized('Invalid or expired token'));
   }
 }
 
-const RANK: Record<UserRole, number> = { VIEWER: 0, OPERATOR: 1, ADMIN: 2 };
+const RANK: Record<UserRole, number> = { CLIENT: 0, VIEWER: 1, OPERATOR: 2, ADMIN: 3 };
 
 export function requireRole(min: UserRole) {
   return (req: Request, _res: Response, next: NextFunction): void => {

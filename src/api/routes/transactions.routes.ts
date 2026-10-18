@@ -1,7 +1,8 @@
 import { Router } from 'express';
+import { Types } from 'mongoose';
 import { z } from 'zod';
 import { requireChargePoint, requireChargePointRef } from '../../lib/chargePointRef';
-import { notFound } from '../../lib/errors';
+import { forbidden, notFound } from '../../lib/errors';
 import { MeterValue } from '../../models/MeterValue';
 import { Transaction } from '../../models/Transaction';
 import { TRANSACTION_STATUSES } from '../../models/enums';
@@ -56,6 +57,9 @@ transactionsRouter.get(
   asyncHandler(async (req, res) => {
     const q = req.query as unknown as z.infer<typeof listQuery>;
     const filter: Record<string, unknown> = {};
+    if (req.user?.role === 'CLIENT') {
+      filter.clientId = new Types.ObjectId(req.user.clientId);
+    }
     if (q.chargePointId) filter.chargePointId = await requireChargePointRef(q.chargePointId);
     if (q.connectorId !== undefined) filter.connectorId = q.connectorId;
     if (q.idTag) filter.idTag = q.idTag;
@@ -94,8 +98,12 @@ transactionsRouter.get(
 
 transactionsRouter.get(
   '/active',
-  asyncHandler(async (_req, res) => {
-    const data = await Transaction.find({ status: 'Active' }).sort({ startTimestamp: -1 }).lean();
+  asyncHandler(async (req, res) => {
+    const filter: Record<string, unknown> = { status: 'Active' };
+    if (req.user?.role === 'CLIENT') {
+      filter.clientId = new Types.ObjectId(req.user.clientId);
+    }
+    const data = await Transaction.find(filter).sort({ startTimestamp: -1 }).lean();
     const driversByIdTag = await store.findUsersByIdTags(data.map((t) => t.idTag));
     res.json(
       data.map((t) => {
@@ -111,6 +119,9 @@ transactionsRouter.get(
   asyncHandler(async (req, res) => {
     const tx = await Transaction.findById(Number(req.params.id)).lean();
     if (!tx) throw notFound('Transaction not found');
+    if (req.user?.role === 'CLIENT' && String(tx.clientId ?? '') !== String(req.user.clientId)) {
+      throw forbidden('Access denied');
+    }
     const driver = await store.findUserByIdTag(tx.idTag);
     res.json({
       ...tx,

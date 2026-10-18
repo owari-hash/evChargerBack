@@ -52,9 +52,14 @@ idTagsRouter.get(
   asyncHandler(async (req, res) => {
     const q = req.query as unknown as z.infer<typeof listQuery>;
     const filter: Record<string, unknown> = {};
-    if (q.status) filter.status = q.status;
-    if (q.walletOwnerType) filter.walletOwnerType = q.walletOwnerType;
-    if (q.walletOwnerId) filter.walletOwnerId = q.walletOwnerId;
+    if (req.user?.role === 'CLIENT') {
+      filter.walletOwnerType = 'CLIENT';
+      filter.walletOwnerId = req.user.clientId;
+    } else {
+      if (q.status) filter.status = q.status;
+      if (q.walletOwnerType) filter.walletOwnerType = q.walletOwnerType;
+      if (q.walletOwnerId) filter.walletOwnerId = q.walletOwnerId;
+    }
     if (q.search) {
       filter.$or = [
         { _id: { $regex: q.search, $options: 'i' } },
