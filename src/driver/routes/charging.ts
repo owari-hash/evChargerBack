@@ -84,8 +84,19 @@ stationRoutes.get(
       const mine = await listSessionsForIdTag(user.idTag, 10);
       const here = (s: ChargingSession) =>
         s.chargePointId === station.id || s.chargePointId === station.cpId;
-      // Only an ongoing active charge is returned. When it is over, it is immediately cleared.
-      session = mine.find((s) => s.status === 'Active' && here(s)) ?? null;
+      // Return active session, or recent completed session (< 15 min) so driver sees completion summary and e-Barimt
+      const RECENT_STOP_WINDOW_MS = 15 * 60 * 1000;
+      const isRecent = (s: ChargingSession) =>
+        s.status === 'Active' ||
+        Boolean(
+          s.stopTimestamp &&
+            Date.now() - new Date(s.stopTimestamp).getTime() < RECENT_STOP_WINDOW_MS,
+        );
+
+      session =
+        mine.find((s) => s.status === 'Active' && here(s)) ??
+        mine.find((s) => here(s) && isRecent(s)) ??
+        null;
     }
 
     return {

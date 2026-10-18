@@ -20,6 +20,8 @@ import {
   resettleSessionWallet,
   resolveWalletOwnerForIdTag,
 } from './wallet.service';
+import { env } from '../config/env';
+import { issueEBarimtForTransaction } from './ebarimt.service';
 
 export interface StartTransactionInput {
   /** The charge point's `_id`, which is what the records reference. */
@@ -226,6 +228,11 @@ export async function stopTransaction(
         chargePointId: tx.chargePointId,
         connectorId: tx.connectorId,
         energyWh: tx.energyWh ?? 0,
+      });
+
+      // Auto-issue e-Barimt so driver has it ready upon completion
+      issueEBarimtForTransaction(tx._id).catch((err: unknown) => {
+        logger.warn({ err: (err as Error).message, txId: tx._id }, 'auto-issue e-barimt for completed session failed');
       });
     }
 

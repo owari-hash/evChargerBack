@@ -114,9 +114,14 @@ export async function storeMeterValues(
     ).catch(() => undefined);
   }
 
-  if (transactionId !== undefined) {
-    const tx = await Transaction.findById(transactionId);
-    if (tx && tx.status === 'Active') {
+  let tx =
+    transactionId !== undefined && transactionId > 0
+      ? await Transaction.findById(transactionId)
+      : null;
+  if (!tx && connectorId > 0) {
+    tx = await Transaction.findOne({ chargePointId, connectorId, status: 'Active' });
+  }
+  if (tx && tx.status === 'Active') {
       const prevMeterWh = tx.lastMeterWh ?? tx.meterStart;
       const prevTime = tx.lastMeterValueAt;
       if (energyWh !== undefined) {
@@ -191,7 +196,6 @@ export async function storeMeterValues(
         }
       }
     }
-  }
 
   bus.emitEvent('transaction.metervalue', cpId, {
     connectorId,
