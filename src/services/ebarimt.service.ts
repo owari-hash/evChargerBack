@@ -49,6 +49,37 @@ export function calculateVat(amount: number): number {
 }
 
 /**
+ * Resolves the 4-digit districtCode required by PosAPI (pattern: [0-9]{4}).
+ * E.g. "2415" (district 24 + khoroo 15), "2301" (district 23 + khoroo 01).
+ */
+export function resolveDistrictCode(merchant?: { districtCode?: string; khorooCode?: string } | null): string {
+  const envDistrict = process.env.EBARIMT_DISTRICT_CODE?.trim();
+  if (envDistrict && /^\d{4}$/.test(envDistrict)) {
+    return envDistrict;
+  }
+
+  const rawDistrict = (merchant?.districtCode || envDistrict || '24').trim();
+  const rawKhoroo = (merchant?.khorooCode || '15').trim();
+
+  // If already 4 digits (e.g. "2415"), return it directly
+  if (/^\d{4}$/.test(rawDistrict)) {
+    return rawDistrict;
+  }
+
+  // If 2 digits (e.g. "23" or "24"), combine with 2-digit khoroo (e.g. "01" or "15")
+  if (/^\d{2}$/.test(rawDistrict)) {
+    const khorooPad = rawKhoroo.padStart(2, '0').slice(-2);
+    return `${rawDistrict}${khorooPad}`;
+  }
+
+  if (/^\d{1,3}$/.test(rawDistrict)) {
+    return rawDistrict.padEnd(4, '0');
+  }
+
+  return '2415';
+}
+
+/**
  * The merchant a station's receipts belong to: the station's own setting, else
  * its client's. Null means "use the network default". A configured merchant
  * that is missing or disabled is an error, never a silent fallback — that would
@@ -167,7 +198,7 @@ export async function issueEBarimtForTransaction(
   }
 
   const merchantTin = activeMerchant?.merchantTin || process.env.EBARIMT_MERCHANT_TIN || '6123456';
-  const districtCode = activeMerchant?.districtCode || process.env.EBARIMT_DISTRICT_CODE || '23';
+  const districtCode = resolveDistrictCode(activeMerchant);
   const isTest = activeMerchant?.envMode === 'TEST';
   const rawUrl = isTest
     ? activeMerchant?.testApiUrl || process.env.EBARIMTSHINE_TEST || 'http://103.236.194.50:7080/'
@@ -281,7 +312,7 @@ export async function issueEBarimtForPayment(
   const activeMerchant = await EbarimtMerchant.findOne({ isDefault: true, enabled: true }).lean().catch(() => null);
 
   const merchantTin = activeMerchant?.merchantTin || process.env.EBARIMT_MERCHANT_TIN || '6123456';
-  const districtCode = activeMerchant?.districtCode || process.env.EBARIMT_DISTRICT_CODE || '23';
+  const districtCode = resolveDistrictCode(activeMerchant);
   const isTest = activeMerchant?.envMode === 'TEST';
   const rawUrl = isTest
     ? activeMerchant?.testApiUrl || process.env.EBARIMTSHINE_TEST || 'http://103.236.194.50:7080/'

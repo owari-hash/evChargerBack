@@ -60,8 +60,8 @@ ebarimtMerchantsRouter.get(
 const merchantSchema = z.object({
   name: z.string().min(2, 'Нэрээ оруулна уу'),
   merchantTin: z.string().min(4, 'ААН-ийн Регистрийн дугаарыг оруулна уу'),
-  districtCode: z.string().default('23'),
-  khorooCode: z.string().default('1'),
+  districtCode: z.string().default('2415'),
+  khorooCode: z.string().default('15'),
   envMode: z.enum(['PRODUCTION', 'TEST']).default('PRODUCTION'),
   prodApiUrl: z.string().default('http://103.143.40.43:7080/'),
   testApiUrl: z.string().default('http://103.236.194.50:7080/'),

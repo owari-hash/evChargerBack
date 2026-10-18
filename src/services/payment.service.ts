@@ -539,13 +539,6 @@ export async function syncPayment(payment: PaymentDoc): Promise<PaymentDoc> {
           'failed to issue ebarimt after QPay transaction payment',
         ),
       );
-    } else {
-      await issueEBarimtForPayment(payment).catch((err: unknown) =>
-        qpayLogger.error(
-          { paymentId: String(payment._id), err: (err as Error).message },
-          'failed to issue ebarimt after QPay wallet topup',
-        ),
-      );
     }
 
     await applyWalletTopUp(payment);
