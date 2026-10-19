@@ -187,8 +187,7 @@ export function attachOcppServer(server: HttpServer): WebSocketServer {
       const parsed = parseConnectPath(req.url);
       const chargePointId = parsed?.cpId ?? null;
       if (!parsed || !chargePointId) {
-        // Not an OCPP path; let other upgrade handlers (if any) deal with it.
-        rejectUpgrade(socket, 404, 'Not Found');
+        // Not an OCPP path; let other upgrade handlers (e.g. notification socket) deal with it.
         return;
       }
 

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { badRequest, notFound } from '../../lib/errors';
 import { imageUpload, uploadUrl } from '../../lib/uploads';
 import { Announcement } from '../../models/Announcement';
+import { broadcastNotification } from '../../realtime/notification-socket';
 import {
   asyncHandler,
   paginate,
@@ -69,6 +70,21 @@ announcementsRouter.post(
       imageUrl: file ? uploadUrl('announcements', file.filename) : undefined,
       createdBy: req.user?.email,
     });
+
+    if (announcement.isActive) {
+      broadcastNotification(
+        { role: 'all' },
+        {
+          id: String(announcement._id),
+          kind: 'announcement',
+          title: announcement.title,
+          body: announcement.body,
+          imageUrl: announcement.imageUrl ?? null,
+          at: announcement.createdAt.toISOString(),
+        },
+      );
+    }
+
     res.status(201).json(announcement.toJSON());
   }),
 );

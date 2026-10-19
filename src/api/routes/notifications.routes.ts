@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { AdminNotification } from '../../models/AdminNotification';
+import { broadcastNotification } from '../../realtime/notification-socket';
 import { asyncHandler, requireAuth, validate } from '../middleware';
 
 export const adminNotificationsRouter = Router();
@@ -69,19 +70,23 @@ adminNotificationsRouter.post(
       { upsert: true, new: true },
     );
 
+    const notificationData = {
+      key: doc.key,
+      kind: doc.kind,
+      title: doc.title,
+      detail: doc.detail,
+      tone: doc.tone,
+      at: doc.at ? new Date(doc.at).toISOString() : new Date().toISOString(),
+      href: doc.href,
+      toasted: true,
+      isRead: doc.isRead,
+    };
+
+    broadcastNotification({ userId, role: 'admin' }, notificationData);
+
     res.status(201).json({
       ok: true,
-      notification: {
-        key: doc.key,
-        kind: doc.kind,
-        title: doc.title,
-        detail: doc.detail,
-        tone: doc.tone,
-        at: doc.at ? new Date(doc.at).toISOString() : new Date().toISOString(),
-        href: doc.href,
-        toasted: true,
-        isRead: doc.isRead,
-      },
+      notification: notificationData,
     });
   }),
 );

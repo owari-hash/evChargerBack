@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { DriverNotification } from '../../models/DriverNotification';
+import { broadcastNotification } from '../../realtime/notification-socket';
 import { requireUser } from '../auth/session';
 import { parseBody, route } from '../http';
 
@@ -87,19 +88,23 @@ driverNotificationsRoutes.post(
       });
     }
 
+    const itemData = {
+      id: String(doc._id),
+      kind: doc.kind,
+      title: doc.title,
+      body: doc.body,
+      imageUrl: doc.imageUrl ?? null,
+      href: doc.href,
+      dedupeKey: doc.dedupeKey,
+      at: doc.at ? new Date(doc.at).toISOString() : new Date().toISOString(),
+      isRead: doc.isRead,
+    };
+
+    broadcastNotification({ userId: user.id, role: 'driver' }, itemData);
+
     return {
       ok: true,
-      item: {
-        id: String(doc._id),
-        kind: doc.kind,
-        title: doc.title,
-        body: doc.body,
-        imageUrl: doc.imageUrl ?? null,
-        href: doc.href,
-        dedupeKey: doc.dedupeKey,
-        at: doc.at ? new Date(doc.at).toISOString() : new Date().toISOString(),
-        isRead: doc.isRead,
-      },
+      item: itemData,
     };
   }),
 );
