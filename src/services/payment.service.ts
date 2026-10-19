@@ -31,6 +31,7 @@ import * as quickqr from './qpay/quickqr.client';
 import { credit as creditWallet, debit as debitWallet } from './wallet.service';
 import { issueEBarimtForTransaction, issueEBarimtForPayment } from './ebarimt.service';
 import { sessionCost } from './pricing.service';
+import { store } from '../driver/store';
 
 /** MNT has no subunits in practice — QPay expects whole tugrik. */
 const normaliseAmount = (amount: number): number => {
@@ -533,7 +534,22 @@ export async function syncPayment(payment: PaymentDoc): Promise<PaymentDoc> {
         { $set: { cost: payment.paidAmount } },
       ).catch(() => undefined);
 
-      await issueEBarimtForTransaction(payment.transactionId).catch((err: unknown) =>
+      let resolvedCustomerNo: string | undefined;
+      if (payment.userId) {
+        const driver = await store.findUserById(payment.userId).catch(() => null);
+        resolvedCustomerNo =
+          driver?.ebarimtCustomerNo ||
+          (driver?.phone && /^\d{8}$/.test(driver.phone.trim()) ? driver.phone.trim() : undefined);
+      } else if (payment.idTag) {
+        const driver = await store.findUserByIdTag(payment.idTag).catch(() => null);
+        resolvedCustomerNo =
+          driver?.ebarimtCustomerNo ||
+          (driver?.phone && /^\d{8}$/.test(driver.phone.trim()) ? driver.phone.trim() : undefined);
+      }
+
+      await issueEBarimtForTransaction(payment.transactionId, {
+        customerNo: resolvedCustomerNo,
+      }).catch((err: unknown) =>
         qpayLogger.error(
           { paymentId: String(payment._id), err: (err as Error).message },
           'failed to issue ebarimt after QPay transaction payment',

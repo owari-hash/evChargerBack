@@ -547,7 +547,7 @@ export async function remoteStop(transactionId: number, issuedBy: string): Promi
 
 export async function requestEBarimt(
   transactionId: number,
-  options: { type?: 'B2C_RECEIPT' | 'B2B_RECEIPT'; customerTin?: string },
+  options: { type?: 'B2C_RECEIPT' | 'B2B_RECEIPT'; customerTin?: string; customerNo?: string },
 ): Promise<ChargingSession> {
   const tx = await issueEBarimtForTransaction(transactionId, options);
   return toSession(tx.toObject() as unknown as RawTransaction);

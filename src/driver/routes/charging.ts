@@ -212,6 +212,7 @@ sessionRoutes.post(
 const ebarimtSchema = z.object({
   type: z.enum(['B2C_RECEIPT', 'B2B_RECEIPT']).default('B2C_RECEIPT'),
   customerTin: z.string().optional(),
+  customerNo: z.string().optional(),
 });
 
 sessionRoutes.post(
@@ -231,12 +232,21 @@ sessionRoutes.post(
     const parsed = ebarimtSchema.safeParse(req.body ?? {});
     if (!parsed.success) throw badRequest('Тэмдэглэсэн талбаруудаа шалгана уу');
 
-    const { type, customerTin } = parsed.data;
+    const { type, customerTin, customerNo } = parsed.data;
     if (type === 'B2B_RECEIPT' && (!customerTin || customerTin.trim().length < 5)) {
       throw badRequest('Байгууллагын регистрийн дугаарыг зөв оруулна уу');
     }
 
-    const session = await requestEBarimt(transactionId, { type, customerTin: customerTin?.trim() });
+    const resolvedCustomerNo =
+      type === 'B2C_RECEIPT'
+        ? customerNo?.trim() || user.ebarimtCustomerNo || (user.phone && /^\d{8}$/.test(user.phone) ? user.phone : undefined)
+        : undefined;
+
+    const session = await requestEBarimt(transactionId, {
+      type,
+      customerTin: customerTin?.trim(),
+      customerNo: resolvedCustomerNo,
+    });
     return { session };
   }),
 );

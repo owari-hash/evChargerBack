@@ -123,6 +123,7 @@ export function toPublicUser(user: StoredUser, isInternal?: boolean): PublicUser
     isInternal: isInternal ?? Boolean(user.isInternal),
     vehicleBrand: user.vehicleBrand,
     vehicleModel: user.vehicleModel,
+    ebarimtCustomerNo: user.ebarimtCustomerNo,
     pendingGuides: user.pendingGuides ?? [],
     locale: user.locale ?? 'en',
     createdAt: user.createdAt,

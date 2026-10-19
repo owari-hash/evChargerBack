@@ -115,6 +115,7 @@ export interface PublicUser {
   isInternal?: boolean;
   vehicleBrand?: string;
   vehicleModel?: string;
+  ebarimtCustomerNo?: string;
   /** First-run guides still to show this driver: 'app' and/or 'web'. */
   pendingGuides: string[];
   locale: string;

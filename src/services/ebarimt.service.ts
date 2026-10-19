@@ -5,6 +5,7 @@ import { ebarimtLogger } from '../lib/logger';
 import { ChargePoint } from '../models/ChargePoint';
 import { Client } from '../models/Client';
 import { HttpError, badRequest, notFound } from '../lib/errors';
+import { store } from '../driver/store';
 
 export interface IssueEBarimtOptions {
   type?: 'B2C_RECEIPT' | 'B2B_RECEIPT';
@@ -205,10 +206,24 @@ export async function issueEBarimtForTransaction(
     : activeMerchant?.prodApiUrl || activeMerchant?.ebarimtApiUrl || process.env.EBARIMTSHINE_IP || 'http://103.143.40.43:7080/';
   const baseUrl = rawUrl.replace(/\/+$/, '');
 
+  let resolvedCustomerNo = options.customerNo?.trim();
+  if (!resolvedCustomerNo && !isB2B && tx.idTag) {
+    const driver = await store.findUserByIdTag(tx.idTag).catch(() => null);
+    if (driver?.ebarimtCustomerNo) {
+      resolvedCustomerNo = driver.ebarimtCustomerNo.trim();
+    } else if (driver?.phone && /^\d{8}$/.test(driver.phone.trim())) {
+      resolvedCustomerNo = driver.phone.trim();
+    }
+  }
+
+  const payloadCustomerNo = isB2B
+    ? (options.customerTin || options.customerNo)
+    : (resolvedCustomerNo || undefined);
+
   const payload = {
     type: receiptType,
     merchantTin,
-    customerNo: options.customerNo || (isB2B ? options.customerTin : tx.idTag),
+    customerNo: payloadCustomerNo,
     customerTin: isB2B ? options.customerTin : undefined,
     districtCode,
     branchNo: '001',
@@ -319,10 +334,34 @@ export async function issueEBarimtForPayment(
     : activeMerchant?.prodApiUrl || activeMerchant?.ebarimtApiUrl || process.env.EBARIMTSHINE_IP || 'http://103.143.40.43:7080/';
   const baseUrl = rawUrl.replace(/\/+$/, '');
 
+  let resolvedCustomerNo = options.customerNo?.trim();
+  if (!resolvedCustomerNo && !isB2B) {
+    if (payment.userId) {
+      const driver = await store.findUserById(payment.userId).catch(() => null);
+      if (driver?.ebarimtCustomerNo) {
+        resolvedCustomerNo = driver.ebarimtCustomerNo.trim();
+      } else if (driver?.phone && /^\d{8}$/.test(driver.phone.trim())) {
+        resolvedCustomerNo = driver.phone.trim();
+      }
+    }
+    if (!resolvedCustomerNo && payment.idTag) {
+      const driver = await store.findUserByIdTag(payment.idTag).catch(() => null);
+      if (driver?.ebarimtCustomerNo) {
+        resolvedCustomerNo = driver.ebarimtCustomerNo.trim();
+      } else if (driver?.phone && /^\d{8}$/.test(driver.phone.trim())) {
+        resolvedCustomerNo = driver.phone.trim();
+      }
+    }
+  }
+
+  const payloadCustomerNo = isB2B
+    ? (options.customerTin || options.customerNo)
+    : (resolvedCustomerNo || undefined);
+
   const payload = {
     type: receiptType,
     merchantTin,
-    customerNo: options.customerNo || (isB2B ? options.customerTin : payment.walletOwnerId || payment.idTag || 'CUSTOMER'),
+    customerNo: payloadCustomerNo,
     customerTin: isB2B ? options.customerTin : undefined,
     districtCode,
     branchNo: '001',

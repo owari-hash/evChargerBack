@@ -59,6 +59,9 @@ accountRoutes.patch(
     if (body.locale !== undefined) patch.locale = body.locale;
     if (body.vehicleBrand !== undefined) patch.vehicleBrand = body.vehicleBrand || undefined;
     if (body.vehicleModel !== undefined) patch.vehicleModel = body.vehicleModel || undefined;
+    if (body.ebarimtCustomerNo !== undefined) {
+      patch.ebarimtCustomerNo = body.ebarimtCustomerNo.trim() || undefined;
+    }
 
     if (body.email !== undefined && (body.email || undefined) !== user.email) {
       if (body.email) {

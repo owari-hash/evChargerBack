@@ -109,6 +109,7 @@ export const updateProfileSchema = z.object({
   locale: z.enum(['en', 'mn']).optional(),
   vehicleBrand: z.string().trim().max(40).optional().or(z.literal('')),
   vehicleModel: z.string().trim().max(40).optional().or(z.literal('')),
+  ebarimtCustomerNo: z.string().trim().max(20).optional().or(z.literal('')),
 });
 
 export const verifyPhoneSchema = z.object({

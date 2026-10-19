@@ -32,6 +32,8 @@ export interface StoredUser {
   /** The vehicle this driver charges — shown on an active session, not OCPP data. */
   vehicleBrand?: string;
   vehicleModel?: string;
+  /** 8-digit E-Barimt user code or phone number for automatic easy registration. */
+  ebarimtCustomerNo?: string;
   /**
    * First-run guides this driver has not finished yet, per surface (see
    * DRIVER_GUIDES). Set on new accounts only — accounts from before the guides
@@ -102,6 +104,7 @@ const driverUserSchema = new Schema(
     idTag: { type: String, index: true, sparse: true },
     vehicleBrand: { type: String, trim: true },
     vehicleModel: { type: String, trim: true },
+    ebarimtCustomerNo: { type: String, trim: true },
     // No default: documents written before the guides existed stay without it.
     pendingGuides: { type: [String], default: undefined },
     locale: { type: String, default: 'en' },
@@ -161,6 +164,7 @@ interface DriverUserDoc {
   idTag?: string;
   vehicleBrand?: string;
   vehicleModel?: string;
+  ebarimtCustomerNo?: string;
   locale: string;
   tokenVersion: number;
   lastLoginAt?: Date;
@@ -207,6 +211,7 @@ function toUser(doc: DriverUserDoc): StoredUser {
     idTag: doc.idTag ?? undefined,
     vehicleBrand: doc.vehicleBrand || undefined,
     vehicleModel: doc.vehicleModel || undefined,
+    ebarimtCustomerNo: doc.ebarimtCustomerNo || undefined,
     pendingGuides: doc.pendingGuides?.length ? [...doc.pendingGuides] : undefined,
     locale: doc.locale ?? 'en',
     tokenVersion: doc.tokenVersion ?? 0,
