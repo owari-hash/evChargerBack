@@ -43,6 +43,64 @@ async function postReceipt(baseUrl: string, payload: unknown): Promise<Record<st
   return data;
 }
 
+const BOGUS_EBARIMT_CODES = new Set([
+  '00000000',
+  '11111111',
+  '22222222',
+  '33333333',
+  '44444444',
+  '55555555',
+  '66666666',
+  '77777777',
+  '88888888',
+  '99999999',
+  '12345678',
+  '87654321',
+]);
+
+/**
+ * Validates a taxpayer TIN or enterprise registration number against official
+ * ebarimt.mn central tax database.
+ */
+export async function verifyTaxpayer(tinOrRegNo: string): Promise<{ valid: boolean; name?: string; tin?: string; error?: string }> {
+  const clean = tinOrRegNo.trim();
+  if (!clean) return { valid: false, error: 'Татвар төлөгчийн дугаар хоосон байна' };
+
+  try {
+    // 1. Check as TIN
+    const tinRes = await fetch(`https://api.ebarimt.mn/api/info/check/getInfo?tin=${encodeURIComponent(clean)}`, {
+      signal: AbortSignal.timeout(4000),
+    });
+    if (tinRes.ok) {
+      const data = (await tinRes.json().catch(() => null)) as { status?: number; data?: { found?: boolean; name?: string } };
+      if (data?.status === 200 && data.data?.found) {
+        return { valid: true, name: data.data.name, tin: clean };
+      }
+    }
+
+    // 2. Check as enterprise registration number (e.g. 7-digit RD)
+    const regRes = await fetch(`https://api.ebarimt.mn/api/info/check/getTinInfo?regNo=${encodeURIComponent(clean)}`, {
+      signal: AbortSignal.timeout(4000),
+    });
+    if (regRes.ok) {
+      const data = (await regRes.json().catch(() => null)) as { status?: number; data?: string | number };
+      if (data?.status === 200 && data.data) {
+        const resolvedTin = String(data.data);
+        const nameRes = await fetch(`https://api.ebarimt.mn/api/info/check/getInfo?tin=${encodeURIComponent(resolvedTin)}`, {
+          signal: AbortSignal.timeout(4000),
+        }).catch(() => null);
+        const nameData = nameRes && nameRes.ok ? ((await nameRes.json().catch(() => null)) as { data?: { name?: string } }) : null;
+        return { valid: true, name: nameData?.data?.name, tin: resolvedTin };
+      }
+    }
+
+    return { valid: false, error: 'Татварын ерөнхий газрын бүртгэлд олдсонгүй (Хүчингүй ТТД/Регистр)' };
+  } catch {
+    // In case ebarimt.mn network timeout occurs, allow PosAPI to be the final arbiter
+    return { valid: true, tin: clean };
+  }
+}
+
 export function calculateVat(amount: number): number {
   if (!amount || amount <= 0) return 0;
   const vat = amount - amount / 1.1;
@@ -187,6 +245,13 @@ export async function issueEBarimtForTransaction(
   const isB2B = options.type === 'B2B_RECEIPT' || Boolean(options.customerTin);
   const receiptType: 'B2C_RECEIPT' | 'B2B_RECEIPT' = isB2B ? 'B2B_RECEIPT' : 'B2C_RECEIPT';
 
+  if (isB2B && options.customerTin) {
+    const verified = await verifyTaxpayer(options.customerTin);
+    if (!verified.valid) {
+      throw badRequest(verified.error || 'Байгууллагын регистрийн дугаар хүчингүй байна');
+    }
+  }
+
   // The station's (or its client's) own merchant issues the receipt — the
   // money is theirs. Only stations with neither use the network default.
   let activeMerchant = await merchantForTransaction(tx);
@@ -207,11 +272,15 @@ export async function issueEBarimtForTransaction(
   const baseUrl = rawUrl.replace(/\/+$/, '');
 
   let resolvedCustomerNo = options.customerNo?.trim();
-  if (!resolvedCustomerNo && !isB2B && tx.idTag) {
+  if (resolvedCustomerNo) {
+    if (!/^\d{8}$/.test(resolvedCustomerNo) || BOGUS_EBARIMT_CODES.has(resolvedCustomerNo)) {
+      throw badRequest('Хүчингүй И-Баримтын код байна. Өөрийн Ebarimt систем дэх бодит 8 оронтой кодоо оруулна уу.');
+    }
+  } else if (!isB2B && tx.idTag) {
     const driver = await store.findUserByIdTag(tx.idTag).catch(() => null);
-    if (driver?.ebarimtCustomerNo) {
+    if (driver?.ebarimtCustomerNo && /^\d{8}$/.test(driver.ebarimtCustomerNo.trim()) && !BOGUS_EBARIMT_CODES.has(driver.ebarimtCustomerNo.trim())) {
       resolvedCustomerNo = driver.ebarimtCustomerNo.trim();
-    } else if (driver?.phone && /^\d{8}$/.test(driver.phone.trim())) {
+    } else if (driver?.phone && /^\d{8}$/.test(driver.phone.trim()) && !BOGUS_EBARIMT_CODES.has(driver.phone.trim())) {
       resolvedCustomerNo = driver.phone.trim();
     }
   }

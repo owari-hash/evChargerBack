@@ -102,6 +102,31 @@ export const changePinSchema = z
   })
   .refine((v) => v.pin === v.confirmPin, { message: PIN_MISMATCH, path: ['confirmPin'] });
 
+const BOGUS_EBARIMT_CODES = new Set([
+  '00000000',
+  '11111111',
+  '22222222',
+  '33333333',
+  '44444444',
+  '55555555',
+  '66666666',
+  '77777777',
+  '88888888',
+  '99999999',
+  '12345678',
+  '87654321',
+]);
+
+export const ebarimtCustomerNoSchema = z
+  .string()
+  .trim()
+  .regex(/^\d{8}$/, 'И-Баримтын хэрэглэгчийн код яг 8 оронтой тоо байх ёстой')
+  .refine((val) => !BOGUS_EBARIMT_CODES.has(val), {
+    message: 'Хүчингүй код байна. Өөрийн Ebarimt систем дэх бодит 8 оронтой кодоо оруулна уу.',
+  })
+  .optional()
+  .or(z.literal(''));
+
 export const updateProfileSchema = z.object({
   name: z.string().trim().max(80).optional(),
   email: emailSchema.optional().or(z.literal('')),
@@ -109,7 +134,7 @@ export const updateProfileSchema = z.object({
   locale: z.enum(['en', 'mn']).optional(),
   vehicleBrand: z.string().trim().max(40).optional().or(z.literal('')),
   vehicleModel: z.string().trim().max(40).optional().or(z.literal('')),
-  ebarimtCustomerNo: z.string().trim().max(20).optional().or(z.literal('')),
+  ebarimtCustomerNo: ebarimtCustomerNoSchema,
 });
 
 export const verifyPhoneSchema = z.object({
