@@ -6,6 +6,7 @@ import { ChargePoint } from '../models/ChargePoint';
 import { Client } from '../models/Client';
 import { HttpError, badRequest, notFound } from '../lib/errors';
 import { store } from '../driver/store';
+import { itcEasyRegisterService } from './itc-easy-register.service';
 
 export interface IssueEBarimtOptions {
   type?: 'B2C_RECEIPT' | 'B2B_RECEIPT';
@@ -139,7 +140,20 @@ export async function verifyEbarimtCustomerNo(
     };
   }
 
-  // 3. Check if it matches an organization TIN/Register in central tax authority
+  // 3. Official ITC Easy-Register getProfile check (api-1787241529220)
+  try {
+    const itcRes = await itcEasyRegisterService.getProfile({ customerNo: clean });
+    if (itcRes.valid) {
+      return {
+        valid: true,
+        type: 'CITIZEN_CODE',
+        name: itcRes.loginName,
+        message: itcRes.message,
+      };
+    }
+  } catch {}
+
+  // 4. Check if it matches an organization TIN/Register in central tax authority
   try {
     const taxCheck = await verifyTaxpayer(clean);
     if (taxCheck.valid && taxCheck.name) {
@@ -447,6 +461,14 @@ export async function issueEBarimtForTransaction(
       { transactionId, receiptId, amount: finalAmount, merchantTin },
       '🧾 [E-BARIMT] Transaction receipt issued',
     );
+
+    // Call ITC approveQr (api-1787241649037) to register directly into consumer's Ebarimt account
+    if (resolvedCustomerNo && ebarimtData.qrData) {
+      itcEasyRegisterService.approveQr(resolvedCustomerNo, ebarimtData.qrData).catch((err) => {
+        ebarimtLogger.warn({ err: (err as Error).message }, '⚠️ [ITC] approveQr non-blocking error');
+      });
+    }
+
     return tx;
   } catch (err) {
     const message = (err as Error).message;
@@ -586,6 +608,14 @@ export async function issueEBarimtForPayment(
       { paymentId: String(payment._id), receiptId, amount: finalAmount },
       '🧾 [E-BARIMT] Payment receipt issued',
     );
+
+    // Call ITC approveQr (api-1787241649037) to register directly into consumer's Ebarimt account
+    if (payload.customerNo && ebarimtData.qrData) {
+      itcEasyRegisterService.approveQr(payload.customerNo, ebarimtData.qrData).catch((err) => {
+        ebarimtLogger.warn({ err: (err as Error).message }, '⚠️ [ITC] approveQr non-blocking error');
+      });
+    }
+
     return payment;
   } catch (err) {
     const message = (err as Error).message;
