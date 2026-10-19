@@ -14,6 +14,7 @@ import {
   type WalletOwnerType,
 } from '../models/Wallet';
 import { bus } from '../realtime/events';
+import { store } from '../driver/store';
 
 /**
  * Prepaid wallet balances and their ledger.
@@ -412,8 +413,17 @@ export async function chargeSessionToWallet(input: {
   if (!Number.isFinite(amount) || amount <= 0) return null;
 
   try {
+    const isInternal = await isInternalTag(input.idTag);
     const owner = await resolveWalletOwnerForIdTag(input.idTag);
     if (!owner) return null;
+
+    if (isInternal || owner.ownerType === 'CLIENT') {
+      walletLogger.info(
+        { transactionId: input.transactionId, idTag: input.idTag },
+        'internal user session; charging free without debiting driver wallet',
+      );
+      return null;
+    }
 
     const kwh = ((input.energyWh ?? 0) / 1000).toFixed(2);
     // Strictly ensure driver wallet balance never drops below 0.
@@ -530,6 +540,44 @@ export async function resettleSessionWallet(input: {
 }
 
 /**
+ * Whether an idTag belongs to an internal user / organization fleet that charges free.
+ */
+export async function isInternalTag(idTag: string): Promise<boolean> {
+  const tag = await IdTag.findById(idTag)
+    .select('isInternal walletOwnerType walletOwnerId ownerPhone')
+    .lean();
+  if (!tag) return false;
+  if (tag.isInternal) return true;
+  if (tag.walletOwnerType === 'CLIENT') return true;
+  if (tag.walletOwnerType === 'USER' && tag.walletOwnerId) {
+    const user = await store.findUserById(tag.walletOwnerId);
+    if (user?.isInternal) return true;
+  }
+  if (tag.ownerPhone) {
+    const user = await store.findUserByPhone(tag.ownerPhone);
+    if (user?.isInternal) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether a driver account is an internal user that charges free.
+ */
+export async function isInternalDriver(userId: string): Promise<boolean> {
+  const user = await store.findUserById(userId);
+  if (!user) return false;
+  if (user.isInternal) return true;
+  if (user.idTag) {
+    return isInternalTag(user.idTag);
+  }
+  if (user.phone) {
+    const tag = await IdTag.findOne({ ownerPhone: user.phone }).lean();
+    if (tag && (tag.isInternal || tag.walletOwnerType === 'CLIENT')) return true;
+  }
+  return false;
+}
+
+/**
  * Whether an idTag has enough balance to start a session. Used by the Authorize
  * pre-check, which only enforces it when WALLET_REQUIRE_BALANCE_TO_START is on.
  */
@@ -539,13 +587,19 @@ export async function hasBalanceToStart(idTag: string): Promise<{
   required: number;
 }> {
   const required = env.WALLET_MIN_START_BALANCE;
+  const isInternal = await isInternalTag(idTag);
+  if (isInternal) {
+    const owner = await resolveWalletOwnerForIdTag(idTag);
+    const balance = owner ? await balanceOf(owner) : 0;
+    return { ok: true, balance, required: 0 };
+  }
   const owner = await resolveWalletOwnerForIdTag(idTag);
   if (!owner) return { ok: false, balance: 0, required };
   const balance = await balanceOf(owner);
   // A CLIENT wallet is an organisation's internal member card (replacing a
   // broken RFID fleet) — it charges for free and is never blocked on balance,
   // even though usage still debits the wallet for the client's own records.
-  if (owner.ownerType === 'CLIENT') return { ok: true, balance, required };
+  if (owner.ownerType === 'CLIENT') return { ok: true, balance, required: 0 };
   return { ok: balance >= required, balance, required };
 }
 

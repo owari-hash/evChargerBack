@@ -112,6 +112,7 @@ export interface PublicUser {
   hasPin: boolean;
   /** The account's charge tag; absent only until one could be issued. */
   idTag?: string;
+  isInternal?: boolean;
   vehicleBrand?: string;
   vehicleModel?: string;
   /** First-run guides still to show this driver: 'app' and/or 'web'. */

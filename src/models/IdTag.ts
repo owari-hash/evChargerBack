@@ -19,12 +19,10 @@ const idTagSchema = new Schema(
      *  as references so renaming a station cannot silently widen or void it. */
     allowedChargePointIds: { type: [{ type: Schema.Types.ObjectId, ref: 'ChargePoint' }], default: [] },
     note: { type: String },
+    /** True if this is an internal user / card that charges for free without balance requirements. */
+    isInternal: { type: Boolean, default: false, index: true },
 
-    /**
-     * Which prepaid wallet this tag spends from. Unset means the tag's own
-     * wallet (`IDTAG` / the idTag itself); pointing it at a `USER` wallet lets
-     * every card a driver owns draw on one account balance.
-     */
+
     walletOwnerType: { type: String, enum: WALLET_OWNER_TYPES },
     walletOwnerId: { type: String, index: true, sparse: true },
   },

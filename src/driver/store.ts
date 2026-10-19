@@ -25,6 +25,8 @@ export interface StoredUser {
   emailVerifiedAt?: string;
   phoneVerifiedAt?: string;
   isActive: boolean;
+  /** True if this is an internal driver who charges free. */
+  isInternal?: boolean;
   /** The account's charge tag — the identity OCPP authorises against. */
   idTag?: string;
   /** The vehicle this driver charges — shown on an active session, not OCPP data. */
@@ -96,6 +98,7 @@ const driverUserSchema = new Schema(
     emailVerifiedAt: { type: Date },
     phoneVerifiedAt: { type: Date },
     isActive: { type: Boolean, default: true },
+    isInternal: { type: Boolean, default: false },
     idTag: { type: String, index: true, sparse: true },
     vehicleBrand: { type: String, trim: true },
     vehicleModel: { type: String, trim: true },
@@ -154,6 +157,7 @@ interface DriverUserDoc {
   emailVerifiedAt?: Date;
   phoneVerifiedAt?: Date;
   isActive: boolean;
+  isInternal?: boolean;
   idTag?: string;
   vehicleBrand?: string;
   vehicleModel?: string;
@@ -199,6 +203,7 @@ function toUser(doc: DriverUserDoc): StoredUser {
     emailVerifiedAt: doc.emailVerifiedAt?.toISOString(),
     phoneVerifiedAt: doc.phoneVerifiedAt?.toISOString(),
     isActive: doc.isActive !== false,
+    isInternal: doc.isInternal === true,
     idTag: doc.idTag ?? undefined,
     vehicleBrand: doc.vehicleBrand || undefined,
     vehicleModel: doc.vehicleModel || undefined,

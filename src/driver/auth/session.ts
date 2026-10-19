@@ -110,7 +110,7 @@ export async function requireUser(req: Request): Promise<StoredUser> {
   return user;
 }
 
-export function toPublicUser(user: StoredUser): PublicUser {
+export function toPublicUser(user: StoredUser, isInternal?: boolean): PublicUser {
   return {
     id: user.id,
     email: user.email,
@@ -120,6 +120,7 @@ export function toPublicUser(user: StoredUser): PublicUser {
     phoneVerified: Boolean(user.phoneVerifiedAt),
     hasPin: Boolean(user.pinHash),
     idTag: user.idTag,
+    isInternal: isInternal ?? Boolean(user.isInternal),
     vehicleBrand: user.vehicleBrand,
     vehicleModel: user.vehicleModel,
     pendingGuides: user.pendingGuides ?? [],

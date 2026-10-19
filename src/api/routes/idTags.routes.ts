@@ -17,6 +17,7 @@ import {
   requireOperator,
   validate,
 } from '../middleware';
+import { store } from '../../driver/store';
 
 export const idTagsRouter = Router();
 idTagsRouter.use(requireAuth);
@@ -92,6 +93,7 @@ const createSchema = z.object({
   ownerName: z.string().optional(),
   ownerEmail: z.string().email().optional(),
   ownerPhone: z.string().optional(),
+  isInternal: z.boolean().optional(),
   maxActiveTransactions: z.number().int().min(0).default(1),
   allowedChargePointIds: z.array(z.string()).optional(),
   note: z.string().optional(),
@@ -118,6 +120,14 @@ idTagsRouter.post(
         : {}),
       ...(walletOwnerType ? { walletOwnerType, walletOwnerId } : {}),
     });
+
+    if (doc.isInternal && doc.ownerPhone) {
+      const user = await store.findUserByPhone(doc.ownerPhone);
+      if (user && !user.isInternal) {
+        await store.updateUser(user.id, { isInternal: true });
+      }
+    }
+
     res.status(201).json(doc.toJSON());
   }),
 );
@@ -164,6 +174,22 @@ idTagsRouter.patch(
       { new: true },
     );
     if (!tag) throw notFound('idTag not found');
+
+    if (body.isInternal !== undefined) {
+      if (tag.ownerPhone) {
+        const user = await store.findUserByPhone(tag.ownerPhone);
+        if (user && user.isInternal !== body.isInternal) {
+          await store.updateUser(user.id, { isInternal: body.isInternal });
+        }
+      }
+      if (tag.walletOwnerType === 'USER' && tag.walletOwnerId) {
+        const user = await store.findUserById(tag.walletOwnerId);
+        if (user && user.isInternal !== body.isInternal) {
+          await store.updateUser(user.id, { isInternal: body.isInternal });
+        }
+      }
+    }
+
     res.json(tag.toJSON());
   }),
 );

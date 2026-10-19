@@ -17,6 +17,7 @@ import { applySessionCost, capCostToBalance, feePercentForStation } from './pric
 import {
   balanceOf,
   chargeSessionToWallet,
+  isInternalTag,
   resettleSessionWallet,
   resolveWalletOwnerForIdTag,
 } from './wallet.service';
@@ -167,6 +168,8 @@ export interface StopTransactionInput {
 async function enforcePrepaidBalanceCap(tx: TransactionDoc): Promise<void> {
   if (!env.WALLET_ENABLED || env.WALLET_ALLOW_NEGATIVE) return;
   try {
+    const isInternal = await isInternalTag(tx.idTag);
+    if (isInternal) return; // Do not cap internal sessions; preserve real energyWh, feeAmount, cost for admin reports
     const owner = await resolveWalletOwnerForIdTag(tx.idTag);
     if (owner && owner.ownerType !== 'CLIENT') {
       const balance = await balanceOf(owner);

@@ -4,6 +4,7 @@ import { createPayment, syncPayment, toPaymentView } from '../services/payment.s
 import {
   getOrCreateWallet,
   idTagsForWallet,
+  isInternalDriver,
   listEntries,
   toWalletView,
   type WalletOwner,
@@ -47,8 +48,14 @@ export function walletConfig(): WalletConfig {
 /** The wallet, created empty on first read, with the charge tags spending from it. */
 export async function getWallet(userId: string): Promise<Record<string, unknown>> {
   const owner = ownerFor(userId);
-  const [wallet, idTags] = await Promise.all([getOrCreateWallet(owner), idTagsForWallet(owner)]);
-  return { ...toWalletView(wallet), idTags };
+  const [wallet, idTags, isInternal] = await Promise.all([
+    getOrCreateWallet(owner),
+    idTagsForWallet(owner),
+    isInternalDriver(userId),
+  ]);
+  const view = toWalletView(wallet);
+  view.isInternal = isInternal;
+  return { ...view, idTags, isInternal };
 }
 
 export function listWalletEntries(userId: string, limit: number) {

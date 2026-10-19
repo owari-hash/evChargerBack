@@ -65,7 +65,8 @@ export async function ensureChargeTag(user: StoredUser): Promise<string | undefi
 
 /** Creates the IdTag and points it at this account's wallet. */
 async function register(idTag: string, user: StoredUser): Promise<void> {
-  if (!(await IdTag.exists({ _id: idTag }))) {
+  const existing = await IdTag.findById(idTag).lean();
+  if (!existing) {
     await IdTag.create({
       _id: idTag,
       status: 'Accepted',
@@ -73,15 +74,20 @@ async function register(idTag: string, user: StoredUser): Promise<void> {
       ownerEmail: user.email,
       ownerName: user.name,
       ownerPhone: user.phone,
+      isInternal: user.isInternal ?? false,
       // One car at a time per driver; a second simultaneous charge is refused.
       maxActiveTransactions: 1,
       // Empty allow-list: valid at every station on the network.
       allowedChargePointIds: [],
     });
+  } else if (user.isInternal && !existing.isInternal) {
+    await IdTag.updateOne({ _id: idTag }, { $set: { isInternal: true } });
   }
 
-  // Charging then draws on the account balance rather than the tag's own.
-  await bindIdTagToWallet(idTag, { ownerType: 'USER', ownerId: user.id }).catch((err: unknown) =>
-    driverLogger.warn({ err, idTag }, 'could not bind charge tag to wallet'),
-  );
+  // Preserve internal and CLIENT wallet bindings; only bind to USER if normal
+  if (!existing || (!existing.isInternal && existing.walletOwnerType !== 'CLIENT')) {
+    await bindIdTagToWallet(idTag, { ownerType: 'USER', ownerId: user.id }).catch((err: unknown) =>
+      driverLogger.warn({ err, idTag }, 'could not bind charge tag to wallet'),
+    );
+  }
 }

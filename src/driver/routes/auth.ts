@@ -12,6 +12,13 @@ import {
   verifyPin,
 } from '../auth/pin';
 import { clearSessionCookie, requireUser, setSessionCookie, toPublicUser } from '../auth/session';
+import { isInternalDriver } from '../../services/wallet.service';
+import type { PublicUser } from '../types';
+
+async function publicUser(user: StoredUser): Promise<PublicUser> {
+  const isInternal = await isInternalDriver(user.id);
+  return toPublicUser(user, isInternal);
+}
 import {
   consumeSmsCode,
   expiredTicket,
@@ -129,7 +136,7 @@ authRoutes.post(
       })) ?? user;
 
     setSessionCookie(res, updated);
-    return { user: toPublicUser(updated) };
+    return { user: await publicUser(updated) };
   }),
 );
 
@@ -151,7 +158,7 @@ authRoutes.get(
       const idTag = await ensureChargeTag(user);
       if (idTag) user = { ...user, idTag };
     }
-    return { user: toPublicUser(user) };
+    return { user: await publicUser(user) };
   }),
 );
 
@@ -165,7 +172,7 @@ authRoutes.post(
     guard(req, 'auth:signup-send-code', 10, HOUR);
     const { phone } = parseBody(req, signupSendCodeSchema);
 
-    if (await store.findUserByPhone(phone)) throw phoneTaken();
+    const existingUser = await store.findUserByPhone(phone);
 
     const code = await sendSmsCode({
       owner: signupOwner(phone),
@@ -174,19 +181,33 @@ authRoutes.post(
       text: templates.signupSms,
     });
 
-    return { ok: true, destination: maskDestination(phone, 'sms'), ...devOnly({ devCode: code }) };
+    return {
+      ok: true,
+      userExists: Boolean(existingUser),
+      destination: maskDestination(phone, 'sms'),
+      ...devOnly({ devCode: code }),
+    };
   }),
 );
 
-/** Nothing is created yet; the ticket returned here is what step 3 exchanges for an account. */
 authRoutes.post(
   '/signup/verify',
-  route(async (req) => {
+  route(async (req, res) => {
     guard(req, 'auth:signup-verify', 20, HOUR);
     const { phone, code } = parseBody(req, phoneCodeSchema);
 
-    if (await store.findUserByPhone(phone)) throw phoneTaken();
     if (!(await consumeSmsCode(signupOwner(phone), 'phone_verify', code))) throw invalidCode();
+
+    const existingUser = await store.findUserByPhone(phone);
+    if (existingUser) {
+      if (!existingUser.isActive) throw unauthorized(WRONG_CREDENTIALS);
+      const updated =
+        (await store.updateUser(existingUser.id, {
+          lastLoginAt: new Date().toISOString(),
+        })) ?? existingUser;
+      setSessionCookie(res, updated);
+      return { ok: true, userExists: true, user: await publicUser(updated) };
+    }
 
     return { ok: true, signupTicket: issuePhoneTicket('signup', { phone }) };
   }),
@@ -224,7 +245,7 @@ authRoutes.post(
     if (idTag) user = { ...user, idTag };
 
     setSessionCookie(res, user);
-    return { user: toPublicUser(user) };
+    return { user: await publicUser(user) };
   }),
 );
 
@@ -282,7 +303,7 @@ authRoutes.post(
       })) ?? user;
 
     setSessionCookie(res, updated);
-    return { ok: true, user: toPublicUser(updated) };
+    return { ok: true, user: await publicUser(updated) };
   }),
 );
 

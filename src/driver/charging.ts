@@ -5,7 +5,7 @@ import { env } from '../config/env';
 import { HttpError } from '../lib/errors';
 import { Reservation } from '../models/Reservation';
 import { CallTimeoutError, OcppRpcError } from '../ocpp/types';
-import { hasBalanceToStart } from '../services/wallet.service';
+import { hasBalanceToStart, isInternalTag } from '../services/wallet.service';
 import { ChargePoint } from '../models/ChargePoint';
 import { Client } from '../models/Client';
 import {
@@ -475,12 +475,15 @@ export async function remoteStart(
     throw new DriverError(409, 'Танд үргэлжилж буй цэнэглэлт байна. Эхлээд түүнийгээ дуусгана уу.');
   }
   if (env.WALLET_ENABLED) {
-    const funds = await hasBalanceToStart(idTag);
-    if (!funds.ok) {
-      throw new DriverError(
-        402,
-        `Хэтэвчний үлдэгдэл хүрэлцэхгүй байна. Цэнэглэлт эхлүүлэхэд хамгийн багадаа ${funds.required.toLocaleString('mn-MN')}₮ шаардлагатай. Хэтэвчээ цэнэглэнэ үү.`,
-      );
+    const isInternal = await isInternalTag(idTag);
+    if (!isInternal) {
+      const funds = await hasBalanceToStart(idTag);
+      if (!funds.ok) {
+        throw new DriverError(
+          402,
+          `Хэтэвчний үлдэгдэл хүрэлцэхгүй байна. Цэнэглэлт эхлүүлэхэд хамгийн багадаа ${funds.required.toLocaleString('mn-MN')}₮ шаардлагатай. Хэтэвчээ цэнэглэнэ үү.`,
+        );
+      }
     }
   }
 

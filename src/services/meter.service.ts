@@ -8,7 +8,7 @@ import { applySessionCost, capCostToBalance } from './pricing.service';
 import { env } from '../config/env';
 import { ocppLogger } from '../lib/logger';
 import { connectionManager } from '../ocpp/manager';
-import { resolveWalletOwnerForIdTag, balanceOf } from './wallet.service';
+import { resolveWalletOwnerForIdTag, balanceOf, isInternalTag } from './wallet.service';
 
 function toWh(value: number, unit?: string): number {
   return unit === 'kWh' ? value * 1000 : value;
@@ -152,9 +152,10 @@ export async function storeMeterValues(
         tx.cost > 0
       ) {
         try {
+          const isInternal = await isInternalTag(tx.idTag);
           const owner = await resolveWalletOwnerForIdTag(tx.idTag);
-          // CLIENT ownerType represents internal/fleet cards that charge without prepaid balance cut-off
-          if (owner && owner.ownerType !== 'CLIENT') {
+          // CLIENT ownerType and internal cards charge without prepaid balance cut-off
+          if (!isInternal && owner && owner.ownerType !== 'CLIENT') {
             const balance = await balanceOf(owner);
 
             // Strictly prevent session cost from exceeding wallet balance when negative balance is forbidden
