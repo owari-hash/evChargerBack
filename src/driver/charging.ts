@@ -401,12 +401,27 @@ export async function decorateSessions(sessions: ChargingSession[]): Promise<Cha
   const ids = [...new Set(sessions.map((s) => s.chargePointId))];
   if (ids.length === 0) return sessions;
 
-  const stations = await ChargePoint.find({ _id: { $in: objectIdsOnly(ids) } })
-    .select('name cpId')
-    .lean<Array<{ _id: unknown; name?: string; cpId: string }>>();
-  const names = new Map(stations.map((cp) => [String(cp._id), cp.name?.trim() || cp.cpId]));
+  const validObjIds = objectIdsOnly(ids);
+  const stations = await ChargePoint.find({
+    $or: [
+      ...(validObjIds.length > 0 ? [{ _id: { $in: validObjIds } }] : []),
+      { cpId: { $in: ids } },
+    ],
+  })
+    .select('name description sitePath cpId')
+    .lean<Array<{ _id: unknown; name?: string; description?: string; sitePath?: string; cpId: string }>>();
 
-  return sessions.map((s) => ({ ...s, stationName: names.get(s.chargePointId) }));
+  const names = new Map<string, string>();
+  for (const cp of stations) {
+    const friendlyName = cp.name?.trim() || cp.description?.trim() || cp.sitePath?.trim() || cp.cpId;
+    names.set(String(cp._id), friendlyName);
+    names.set(cp.cpId, friendlyName);
+  }
+
+  return sessions.map((s) => ({
+    ...s,
+    stationName: names.get(s.chargePointId) || s.stationName,
+  }));
 }
 
 export async function getTransaction(id: number): Promise<ChargingSession | null> {
