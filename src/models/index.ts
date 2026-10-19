@@ -20,4 +20,6 @@ export * from './Client';
 export * from './Settlement';
 export * from './AppRelease';
 export * from './VehicleDetection';
+export * from './AdminNotification';
+export * from './DriverNotification';
 export { Counter, nextSequence, ensureSequenceAtLeast } from '../lib/counters';

@@ -36,6 +36,7 @@ import { connectorAdminRouter } from './routes/connectors.routes';
 import { settlementsRouter } from './routes/settlements.routes';
 import { reportsRouter } from './routes/reports.routes';
 import { vehicleDetectionsRouter } from './routes/vehicleDetections.routes';
+import { adminNotificationsRouter } from './routes/notifications.routes';
 
 export function createApp(): Express {
   const app = express();
@@ -172,6 +173,7 @@ export function createApp(): Express {
   api.use('/stats', statsRouter);
   api.use('/events', eventsRouter);
   api.use('/vehicle-detections', vehicleDetectionsRouter);
+  api.use('/notifications', adminNotificationsRouter);
 
   app.use(base || '/', api);
 

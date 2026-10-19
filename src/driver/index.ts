@@ -6,6 +6,7 @@ import { appRoutes } from './routes/app';
 import { assistantRouter } from './routes/assistant';
 import { authRoutes } from './routes/auth';
 import { sessionRoutes, stationRoutes, walletRoutes } from './routes/charging';
+import { driverNotificationsRoutes } from './routes/notifications';
 
 /**
  * The driver API, mounted at DRIVER_API_BASE_PATH (`/app-api`).
@@ -38,6 +39,7 @@ export function createDriverRouter(): Router {
   router.use('/sessions', sessionRoutes);
   router.use('/wallet', walletRoutes);
   router.use('/assistant', assistantRouter);
+  router.use('/notifications', driverNotificationsRoutes);
 
   router.use((_req, res) => {
     res.status(404).json({ error: 'Хүсэлт олдсонгүй' });
