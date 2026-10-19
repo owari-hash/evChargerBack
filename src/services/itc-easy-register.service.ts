@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { ebarimtLogger } from '../lib/logger';
 import { ItcToken } from '../models/ItcToken';
 
@@ -75,11 +76,14 @@ class ItcEasyRegisterService {
     );
   }
 
+  public lastAuthError: string = '';
+
   /**
    * Performs full password login against ITC Keycloak OAuth2 server.
    */
   private async passwordLogin(): Promise<TokenState | null> {
     try {
+      this.lastAuthError = '';
       ebarimtLogger.info(
         { authUrl: this.authUrl, username: this.username },
         '🔑 [ITC AUTH] Performing password login...',
@@ -109,8 +113,10 @@ class ItcEasyRegisterService {
       };
 
       if (!res.ok || !data?.access_token) {
+        const errMsg = data?.error_description || data?.error || `HTTP ${res.status}`;
+        this.lastAuthError = errMsg;
         ebarimtLogger.error(
-          { status: res.status, error: data?.error_description || data?.error },
+          { status: res.status, error: errMsg },
           '❌ [ITC AUTH] Password login failed',
         );
         return null;
@@ -126,20 +132,22 @@ class ItcEasyRegisterService {
       memoryToken = state;
 
       // Save to MongoDB for persistence across server restarts
-      try {
-        await ItcToken.updateOne(
-          { scope: 'default' },
-          {
-            $set: {
-              accessToken: state.accessToken,
-              refreshToken: state.refreshToken,
-              expiresAt: new Date(state.expiresAt),
+      if (mongoose.connection.readyState === 1) {
+        try {
+          await ItcToken.updateOne(
+            { scope: 'default' },
+            {
+              $set: {
+                accessToken: state.accessToken,
+                refreshToken: state.refreshToken,
+                expiresAt: new Date(state.expiresAt),
+              },
             },
-          },
-          { upsert: true },
-        );
-      } catch (dbErr) {
-        ebarimtLogger.warn({ err: (dbErr as Error).message }, '⚠️ [ITC AUTH] DB save error (non-critical)');
+            { upsert: true },
+          );
+        } catch (dbErr) {
+          ebarimtLogger.warn({ err: (dbErr as Error).message }, '⚠️ [ITC AUTH] DB save error (non-critical)');
+        }
       }
 
       ebarimtLogger.info(
@@ -201,21 +209,23 @@ class ItcEasyRegisterService {
 
       memoryToken = state;
 
-      try {
-        await ItcToken.updateOne(
-          { scope: 'default' },
-          {
-            $set: {
-              accessToken: state.accessToken,
-              refreshToken: state.refreshToken,
-              expiresAt: new Date(state.expiresAt),
+      if (mongoose.connection?.readyState === 1) {
+        try {
+          await ItcToken.updateOne(
+            { scope: 'default' },
+            {
+              $set: {
+                accessToken: state.accessToken,
+                refreshToken: state.refreshToken,
+                expiresAt: new Date(state.expiresAt),
+              },
+              $inc: { refreshCount: 1 },
             },
-            $inc: { refreshCount: 1 },
-          },
-          { upsert: true },
-        );
-      } catch (dbErr) {
-        ebarimtLogger.warn({ err: (dbErr as Error).message }, '⚠️ [ITC AUTH] DB save error (non-critical)');
+            { upsert: true },
+          );
+        } catch (dbErr) {
+          ebarimtLogger.warn({ err: (dbErr as Error).message }, '⚠️ [ITC AUTH] DB save error (non-critical)');
+        }
       }
 
       ebarimtLogger.info(
@@ -251,7 +261,7 @@ class ItcEasyRegisterService {
     }
 
     // 2. Check MongoDB persisted token
-    if (!memoryToken) {
+    if (!memoryToken && mongoose.connection?.readyState === 1) {
       try {
         const doc = await ItcToken.findOne({ scope: 'default' }).lean();
         if (doc && doc.accessToken && doc.expiresAt) {
@@ -300,7 +310,10 @@ class ItcEasyRegisterService {
 
     const token = await this.getAccessToken();
     if (!token) {
-      return { valid: false, message: 'ITC баталгаажуулах сервер холбогдсонгүй' };
+      return {
+        valid: false,
+        message: `ITC Auth алдаа: ${this.lastAuthError || 'Нэвтрэх токен авч чадсангүй'}`,
+      };
     }
 
     try {

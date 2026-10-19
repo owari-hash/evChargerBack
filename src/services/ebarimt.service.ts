@@ -140,20 +140,7 @@ export async function verifyEbarimtCustomerNo(
     };
   }
 
-  // 3. Official ITC Easy-Register getProfile check (api-1787241529220)
-  try {
-    const itcRes = await itcEasyRegisterService.getProfile({ customerNo: clean });
-    if (itcRes.valid) {
-      return {
-        valid: true,
-        type: 'CITIZEN_CODE',
-        name: itcRes.loginName,
-        message: itcRes.message,
-      };
-    }
-  } catch {}
-
-  // 4. Check if it matches an organization TIN/Register in central tax authority
+  // 3. Check if it matches an organization TIN/Register in central tax authority
   try {
     const taxCheck = await verifyTaxpayer(clean);
     if (taxCheck.valid && taxCheck.name) {
@@ -167,45 +154,21 @@ export async function verifyEbarimtCustomerNo(
     }
   } catch {}
 
-  // 4. Check if it's an 8-digit individual code or mobile phone
-  if (clean.length === 8) {
-    const uPhone = (userPhone ?? '').replace(/\D/g, '').slice(-8);
-    if (uPhone && clean === uPhone) {
-      return {
-        valid: true,
-        type: 'CITIZEN_PHONE',
-        message: 'Таны баталгаажсан гар утасны дугаар. Ebarimt хялбар бүртгэлд шууд холбогдоно.',
-      };
-    }
-
-    const mobilePrefixes: Record<string, string> = {
-      '99': 'Мобиком', '95': 'Мобиком', '94': 'Мобиком', '85': 'Мобиком',
-      '88': 'Юнител', '86': 'Юнител', '89': 'Юнител', '80': 'Юнител',
-      '90': 'Скайтел', '91': 'Скайтел', '96': 'Скайтел',
-      '98': 'Ж-Мобайл', '93': 'Ж-Мобайл', '97': 'Ж-Мобайл', '83': 'Ж-Мобайл',
+  // 4. Official ITC Easy-Register getProfile check (api-1787241529220)
+  // Real check with ТЕГ/ITC database. No fake fallback — if it fails, return the real error!
+  const itcRes = await itcEasyRegisterService.getProfile({ customerNo: clean });
+  if (itcRes.valid) {
+    return {
+      valid: true,
+      type: 'CITIZEN_CODE',
+      name: itcRes.loginName,
+      message: itcRes.message,
     };
-    const p2 = clean.slice(0, 2);
-    if (mobilePrefixes[p2]) {
-      return {
-        valid: true,
-        type: 'CITIZEN_PHONE',
-        message: `Хүчинтэй үүрэн холбооны дугаар (${mobilePrefixes[p2]}). Энэ дугаар Ebarimt системд тань бүртгэлтэй эсэхийг нягтална уу.`,
-      };
-    }
-
-    // Citizen 8-digit E-Barimt code (starts with 1-7)
-    if (/^[1-7]\d{7}$/.test(clean)) {
-      return {
-        valid: true,
-        type: 'CITIZEN_CODE',
-        message: 'И-Баримтын 8 оронтой хэрэглэгчийн код хүчинтэй бүтэцтэй байна.',
-      };
-    }
   }
 
   return {
     valid: false,
-    message: 'Хүчингүй код байна. Ebarimt апп-ынхаа 8 оронтой нэвтрэх код, бүртгэлтэй утасны дугаар эсвэл ААН-ийн ТТД-аа оруулна уу.',
+    message: itcRes.message || 'Ebarimt системд бүртгэлгүй хэрэглэгчийн код байна.',
   };
 }
 
