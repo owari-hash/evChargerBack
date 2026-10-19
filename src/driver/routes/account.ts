@@ -1,9 +1,11 @@
 import { Router } from 'express';
+import { z } from 'zod';
 import { clearedPinLock, hashPin, verifyPin } from '../auth/pin';
 import { requireUser, setSessionCookie, toPublicUser } from '../auth/session';
 import { badRequest, conflict, guard, HOUR, notFound, parseBody, route } from '../http';
 import { DRIVER_GUIDES, store, type DriverGuide, type StoredUser } from '../store';
 import { changePinSchema, normalizePhone, updateProfileSchema } from '../validation';
+import { verifyEbarimtCustomerNo } from '../../services/ebarimt.service';
 
 export const accountRoutes = Router();
 
@@ -59,8 +61,21 @@ accountRoutes.patch(
     if (body.locale !== undefined) patch.locale = body.locale;
     if (body.vehicleBrand !== undefined) patch.vehicleBrand = body.vehicleBrand || undefined;
     if (body.vehicleModel !== undefined) patch.vehicleModel = body.vehicleModel || undefined;
+
+    let ebarimtVerification: any = undefined;
     if (body.ebarimtCustomerNo !== undefined) {
-      patch.ebarimtCustomerNo = body.ebarimtCustomerNo.trim() || undefined;
+      const cleanEbarimt = body.ebarimtCustomerNo.trim();
+      if (cleanEbarimt) {
+        ebarimtVerification = await verifyEbarimtCustomerNo(cleanEbarimt, user.phone);
+        if (!ebarimtVerification.valid) {
+          throw badRequest(ebarimtVerification.message, {
+            ebarimtCustomerNo: ebarimtVerification.message,
+          });
+        }
+        patch.ebarimtCustomerNo = cleanEbarimt;
+      } else {
+        patch.ebarimtCustomerNo = undefined;
+      }
     }
 
     if (body.email !== undefined && (body.email || undefined) !== user.email) {
@@ -88,11 +103,31 @@ accountRoutes.patch(
       }
     }
 
-    if (Object.keys(patch).length === 0) return { user: toPublicUser(user) };
+    if (Object.keys(patch).length === 0) {
+      return { user: toPublicUser(user), ebarimtVerification };
+    }
 
     const updated = await store.updateUser(user.id, patch);
     if (!updated) throw notFound(ACCOUNT_NOT_FOUND);
-    return { user: toPublicUser(updated) };
+    return { user: toPublicUser(updated), ebarimtVerification };
+  }),
+);
+
+/**
+ * Pre-validation for E-Barimt customer code / TIN before saving.
+ */
+accountRoutes.post(
+  '/ebarimt/verify',
+  route(async (req) => {
+    const user = await requireUser(req);
+    const body = parseBody(
+      req,
+      z.object({
+        code: z.string().trim(),
+      }),
+    );
+    const result = await verifyEbarimtCustomerNo(body.code, user.phone);
+    return { ok: true, result };
   }),
 );
 

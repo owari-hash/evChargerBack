@@ -101,6 +101,100 @@ export async function verifyTaxpayer(tinOrRegNo: string): Promise<{ valid: boole
   }
 }
 
+export interface EbarimtVerifyResult {
+  valid: boolean;
+  type?: 'CITIZEN_PHONE' | 'CITIZEN_CODE' | 'ORGANIZATION';
+  name?: string;
+  tin?: string;
+  message: string;
+}
+
+/**
+ * Validates an ebarimt code before saving or transaction:
+ * - Checks live against central tax authority (api.ebarimt.mn) if it's an enterprise TIN/Register
+ * - Verifies against user's verified phone number
+ * - Verifies against Mongolian mobile telecom numbering plan
+ * - Verifies against citizen 8-digit customer code format and rejects bogus sequences
+ */
+export async function verifyEbarimtCustomerNo(
+  code: string,
+  userPhone?: string,
+): Promise<EbarimtVerifyResult> {
+  const clean = code.trim();
+  if (!clean) return { valid: true, message: '' };
+
+  // 1. Basic format
+  if (!/^\d{7,12}$/.test(clean)) {
+    return {
+      valid: false,
+      message: 'И-Баримтын хэрэглэгчийн код 8 оронтой тоо (эсвэл байгууллагын ТТД/Регистр) байх ёстой.',
+    };
+  }
+
+  // 2. Reject obvious dummy sequences
+  if (BOGUS_EBARIMT_CODES.has(clean) || /^(\d)\1{6,}$/.test(clean)) {
+    return {
+      valid: false,
+      message: 'Хүчингүй код байна. Өөрийн Ebarimt систем дэх бодит 8 оронтой кодоо оруулна уу.',
+    };
+  }
+
+  // 3. Check if it matches an organization TIN/Register in central tax authority
+  try {
+    const taxCheck = await verifyTaxpayer(clean);
+    if (taxCheck.valid && taxCheck.name) {
+      return {
+        valid: true,
+        type: 'ORGANIZATION',
+        name: taxCheck.name,
+        tin: taxCheck.tin,
+        message: `Байгууллага баталгаажлаа: ${taxCheck.name}`,
+      };
+    }
+  } catch {}
+
+  // 4. Check if it's an 8-digit individual code or mobile phone
+  if (clean.length === 8) {
+    const uPhone = (userPhone ?? '').replace(/\D/g, '').slice(-8);
+    if (uPhone && clean === uPhone) {
+      return {
+        valid: true,
+        type: 'CITIZEN_PHONE',
+        message: 'Таны баталгаажсан гар утасны дугаар. Ebarimt хялбар бүртгэлд шууд холбогдоно.',
+      };
+    }
+
+    const mobilePrefixes: Record<string, string> = {
+      '99': 'Мобиком', '95': 'Мобиком', '94': 'Мобиком', '85': 'Мобиком',
+      '88': 'Юнител', '86': 'Юнител', '89': 'Юнител', '80': 'Юнител',
+      '90': 'Скайтел', '91': 'Скайтел', '96': 'Скайтел',
+      '98': 'Ж-Мобайл', '93': 'Ж-Мобайл', '97': 'Ж-Мобайл', '83': 'Ж-Мобайл',
+    };
+    const p2 = clean.slice(0, 2);
+    if (mobilePrefixes[p2]) {
+      return {
+        valid: true,
+        type: 'CITIZEN_PHONE',
+        message: `Хүчинтэй үүрэн холбооны дугаар (${mobilePrefixes[p2]}). Энэ дугаар Ebarimt системд тань бүртгэлтэй эсэхийг нягтална уу.`,
+      };
+    }
+
+    // Citizen 8-digit E-Barimt code (starts with 1-7)
+    if (/^[1-7]\d{7}$/.test(clean)) {
+      return {
+        valid: true,
+        type: 'CITIZEN_CODE',
+        message: 'И-Баримтын 8 оронтой хэрэглэгчийн код хүчинтэй бүтэцтэй байна.',
+      };
+    }
+  }
+
+  return {
+    valid: false,
+    message: 'Хүчингүй код байна. Ebarimt апп-ынхаа 8 оронтой нэвтрэх код, бүртгэлтэй утасны дугаар эсвэл ААН-ийн ТТД-аа оруулна уу.',
+  };
+}
+
 export function calculateVat(amount: number): number {
   if (!amount || amount <= 0) return 0;
   const vat = amount - amount / 1.1;
