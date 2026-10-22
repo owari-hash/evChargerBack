@@ -286,7 +286,7 @@ const topUpSchema = z.object({
    * `qpay` (default) returns a QR; `card` returns Golomt's `paymentUrl`;
    * `saved_card` charges `cardId` at once and returns the settled payment.
    */
-  method: z.enum(['qpay', 'card', 'saved_card']).default('qpay'),
+  method: z.enum(['qpay', 'card', 'saved_card', 'socialpay']).default('qpay'),
   saveCard: z.boolean().optional(),
   cardId: z.string().regex(/^[a-f0-9]{24}$/i, 'Карт олдсонгүй').optional(),
 });
@@ -308,7 +308,9 @@ walletRoutes.post(
     const methodEnabled =
       method === 'card'
         ? config.cardTopUpEnabled
-        : method === 'saved_card'
+        : method === 'socialpay'
+          ? config.socialPayEnabled
+          : method === 'saved_card'
           ? config.savedCardsEnabled
           : config.topUpEnabled;
     if (method === 'saved_card') {
@@ -339,8 +341,8 @@ walletRoutes.post(
       cardId,
     });
 
-    // A card payment has no QR — the client sends the driver to `paymentUrl`.
-    if (method === 'card') return { invoice };
+    // No QR — the client sends the driver to `paymentUrl` (or the deeplink).
+    if (method === 'card' || method === 'socialpay') return { invoice };
     // A saved card settles in the call; the new balance comes along.
     if (method === 'saved_card') {
       const paid = invoice.status === 'PAID';

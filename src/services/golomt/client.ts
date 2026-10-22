@@ -136,6 +136,8 @@ export async function createInvoice(input: {
   amount: number;
   callback: string;
   genToken?: boolean;
+  /** Also return a deeplink that opens the invoice in the SocialPay app. */
+  socialPay?: boolean;
 }): Promise<GolomtInvoice> {
   const amount = String(input.amount);
   const returnType = 'GET';
@@ -148,8 +150,7 @@ export async function createInvoice(input: {
       genToken: input.genToken ? 'Y' : 'N',
       returnType,
       transactionId: input.transactionId,
-      // SocialPay is offered through QPay's QR flow, not the card page.
-      socialDeeplink: 'N',
+      socialDeeplink: input.socialPay ? 'Y' : 'N',
     },
     'createInvoice',
   );

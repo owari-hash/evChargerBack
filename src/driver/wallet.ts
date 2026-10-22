@@ -42,6 +42,8 @@ export interface WalletConfig {
   cardTopUpEnabled: boolean;
   /** Cards can be saved on the bank page and charged in one tap later. */
   savedCardsEnabled: boolean;
+  /** SocialPay through Golomt: pay in the SocialPay app. */
+  socialPayEnabled: boolean;
 }
 
 export function walletConfig(): WalletConfig {
@@ -57,6 +59,7 @@ export function walletConfig(): WalletConfig {
     topUpEnabled: env.QPAY_ENABLED,
     cardTopUpEnabled: env.GOLOMT_ENABLED,
     savedCardsEnabled: env.GOLOMT_ENABLED && env.GOLOMT_TOKEN_ENABLED,
+    socialPayEnabled: env.GOLOMT_ENABLED,
   };
 }
 
@@ -86,7 +89,7 @@ export async function createTopUp(input: {
   amount: number;
   description: string;
   receiverCode?: string;
-  method?: 'qpay' | 'card' | 'saved_card';
+  method?: 'qpay' | 'card' | 'saved_card' | 'socialpay';
   /** card: keep the card for one-tap top-ups once paid. */
   saveCard?: boolean;
   /** saved_card: which of the driver's saved cards to charge. */
@@ -103,12 +106,16 @@ export async function createTopUp(input: {
     walletOwnerId: owner.ownerId,
   };
 
-  if (input.method === 'card' || input.method === 'saved_card') {
+  if (input.method === 'card' || input.method === 'saved_card' || input.method === 'socialpay') {
     try {
       const payment =
-        input.method === 'card'
-          ? await createGolomtTopUp({ ...golomtInput, saveCard: input.saveCard })
-          : await payGolomtTopUpWithCard({ ...golomtInput, cardId: input.cardId ?? '' });
+        input.method === 'saved_card'
+          ? await payGolomtTopUpWithCard({ ...golomtInput, cardId: input.cardId ?? '' })
+          : await createGolomtTopUp({
+              ...golomtInput,
+              saveCard: input.method === 'card' && input.saveCard,
+              channel: input.method === 'socialpay' ? 'SOCIALPAY' : 'CARD',
+            });
       return toDriverView(payment);
     } catch (err) {
       // The bank's own errors are logged in English; the driver gets one line.

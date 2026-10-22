@@ -625,17 +625,20 @@ interface GolomtTopUpInput {
  * top-ups once the payment succeeds.
  */
 export async function createGolomtTopUp(
-  input: GolomtTopUpInput & { saveCard?: boolean },
+  input: GolomtTopUpInput & { saveCard?: boolean; channel?: 'CARD' | 'SOCIALPAY' },
 ): Promise<PaymentDoc> {
+  const channel = input.channel ?? 'CARD';
   if (!env.GOLOMT_ENABLED) throw serviceUnavailable('Картаар төлөх үйлчилгээ түр боломжгүй байна');
   const amount = normaliseAmount(input.amount);
   const transactionId = newGolomtTransactionId();
-  const saveCard = Boolean(input.saveCard && env.GOLOMT_TOKEN_ENABLED);
+  // A card is only kept from the card page; SocialPay pays from the app.
+  const saveCard = Boolean(input.saveCard && env.GOLOMT_TOKEN_ENABLED && channel === 'CARD');
 
   const payment = await Payment.create({
     senderInvoiceNo: transactionId,
     provider: 'GOLOMT',
     golomtMode: 'PAGE',
+    golomtChannel: channel,
     saveCard,
     status: 'PENDING',
     purpose: 'WALLET_TOPUP',
@@ -654,9 +657,18 @@ export async function createGolomtTopUp(
       amount,
       callback: golomtReturnUrl(transactionId),
       genToken: saveCard,
+      socialPay: channel === 'SOCIALPAY',
     });
     payment.invoiceId = res.invoice;
-    payment.paymentUrl = golomt.paymentPageUrl(res.invoice, 'card');
+    // SocialPay's page shows a QR for the app on a computer; the deeplink
+    // opens the app straight away on a phone.
+    payment.paymentUrl = golomt.paymentPageUrl(res.invoice, channel === 'SOCIALPAY' ? 'socialpay' : 'card');
+    payment.socialPayUrl = golomt.paymentPageUrl(res.invoice, 'socialpay');
+    if (channel === 'SOCIALPAY' && res.socialDeeplink) {
+      payment.deeplinks = [
+        { name: 'SocialPay', description: 'Golomt SocialPay', link: res.socialDeeplink },
+      ] as typeof payment.deeplinks;
+    }
   } catch (err) {
     payment.status = 'FAILED';
     payment.lastError = err instanceof Error ? err.message.slice(0, 500) : 'unknown error';

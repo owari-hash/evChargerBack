@@ -84,6 +84,8 @@ const paymentSchema = new Schema(
      * with /api/inquiry). TOKEN: a saved card charged server-side (/api/check).
      */
     golomtMode: { type: String, enum: ['PAGE', 'TOKEN'] },
+    /** Golomt PAGE: paid by card on the bank page, or in the SocialPay app. */
+    golomtChannel: { type: String, enum: ['CARD', 'SOCIALPAY'] },
     /** PAGE: keep the card's token once paid. TOKEN: the card that was charged. */
     saveCard: { type: Boolean },
     savedCardId: { type: String },
