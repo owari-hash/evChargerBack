@@ -34,9 +34,11 @@ import {
   checkTopUp,
   createTopUp,
   getTopUp,
+  getSavedCards,
   getTopUpQr,
   getWallet,
   listWalletEntries,
+  removeSavedCard,
   walletConfig,
 } from '../wallet';
 
@@ -265,12 +267,13 @@ walletRoutes.get(
     // The receipts page reads up to 100 ledger entries in one go.
     const limit = Number.isFinite(requested) && requested > 0 ? Math.min(requested, 100) : 10;
 
-    const [wallet, entries] = await Promise.all([
+    const [wallet, entries, cards] = await Promise.all([
       getWallet(user.id),
       listWalletEntries(user.id, limit),
+      getSavedCards(user.id),
     ]);
 
-    return { wallet, config: walletConfig(), entries: entries.data, total: entries.total };
+    return { wallet, config: walletConfig(), entries: entries.data, total: entries.total, cards };
   }),
 );
 
@@ -279,6 +282,13 @@ const topUpSchema = z.object({
     .number({ message: 'Дүнгээ оруулна уу' })
     .int('Дүн бүхэл тоо байх ёстой')
     .positive('Дүн 0-ээс их байх ёстой'),
+  /**
+   * `qpay` (default) returns a QR; `card` returns Golomt's `paymentUrl`;
+   * `saved_card` charges `cardId` at once and returns the settled payment.
+   */
+  method: z.enum(['qpay', 'card', 'saved_card']).default('qpay'),
+  saveCard: z.boolean().optional(),
+  cardId: z.string().regex(/^[a-f0-9]{24}$/i, 'Карт олдсонгүй').optional(),
 });
 
 /**
@@ -293,10 +303,21 @@ walletRoutes.post(
     guard(req, 'wallet-topup', 12, 10 * MINUTE);
     guard(req, 'wallet-topup-hourly', 40, HOUR);
 
-    const { amount } = parseBody(req, topUpSchema);
+    const { amount, method, saveCard, cardId } = parseBody(req, topUpSchema);
     const config = walletConfig();
+    const methodEnabled =
+      method === 'card'
+        ? config.cardTopUpEnabled
+        : method === 'saved_card'
+          ? config.savedCardsEnabled
+          : config.topUpEnabled;
+    if (method === 'saved_card') {
+      if (!cardId) throw badRequest('Картаа сонгоно уу', { cardId: 'Картаа сонгоно уу' });
+      // Each charge reaches the card itself; keep a stolen session from draining it.
+      guard(req, 'wallet-card-pay', 6, 10 * MINUTE);
+    }
 
-    if (!config.enabled || !config.topUpEnabled) {
+    if (!config.enabled || !methodEnabled) {
       throw badRequest('Цэнэглэх үйлчилгээ түр боломжгүй байна. Дараа дахин оролдоно уу.');
     }
     if (amount < config.minTopUp || amount > config.maxTopUp) {
@@ -313,7 +334,18 @@ walletRoutes.post(
       amount,
       description: `Хэтэвч цэнэглэлт — ${amount.toLocaleString('mn-MN')}₮`,
       receiverCode: user.phone || user.email,
+      method,
+      saveCard,
+      cardId,
     });
+
+    // A card payment has no QR — the client sends the driver to `paymentUrl`.
+    if (method === 'card') return { invoice };
+    // A saved card settles in the call; the new balance comes along.
+    if (method === 'saved_card') {
+      const paid = invoice.status === 'PAID';
+      return { invoice, paid, wallet: paid ? await getWallet(user.id).catch(() => null) : null };
+    }
 
     // Sent along now so the client can render the QR in one round trip.
     const qr = await getTopUpQr(String(invoice.id));
@@ -357,5 +389,24 @@ walletRoutes.get(
       // The fresh balance comes along, so a paid QR updates the screen in one step.
       wallet: paid ? await getWallet(user.id).catch(() => null) : null,
     };
+  }),
+);
+
+/** The driver's saved bank cards (masked; tokens never leave the server). */
+walletRoutes.get(
+  '/cards',
+  route(async (req) => {
+    const user = await requireUser(req);
+    return { cards: await getSavedCards(user.id) };
+  }),
+);
+
+walletRoutes.delete(
+  '/cards/:id',
+  route(async (req) => {
+    const user = await requireUser(req);
+    const removed = await removeSavedCard(user.id, String(req.params.id ?? ''));
+    if (!removed) throw notFound('Карт олдсонгүй');
+    return { ok: true };
   }),
 );

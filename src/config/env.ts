@@ -152,6 +152,36 @@ const schema = z.object({
   /** How long a freshly created invoice stays payable, in minutes. */
   QPAY_INVOICE_TTL_MINUTES: int(30),
 
+  // ---------- Golomt Bank e-commerce (card / SocialPay) ----------
+  /**
+   * Wallet top-ups by card through Golomt's hosted payment page. Verified
+   * against the live host: POST /api/invoice and /api/inquiry with a Bearer
+   * token, every request and response signed with HMAC-SHA256(GOLOMT_SECRET_KEY).
+   */
+  GOLOMT_ENABLED: bool(false),
+  GOLOMT_BASE_URL: url('https://ecommerce.golomtbank.com'),
+  /** Issued by the bank; informational — the API identifies us by the token. */
+  GOLOMT_MERCHANT_ID: opt,
+  GOLOMT_TERMINAL_ID: opt,
+  /** HMAC key for checksums. Raw: it contains symbols that must not be trimmed. */
+  GOLOMT_SECRET_KEY: optRaw,
+  GOLOMT_TOKEN: optRaw,
+  /** Origin the bank sends the driver back to; defaults to PUBLIC_BASE_URL. */
+  GOLOMT_CALLBACK_BASE_URL: opt
+    .transform((v) => v?.replace(/\/+$/, ''))
+    .pipe(z.string().url().optional()),
+  /** Language of the hosted payment page: mn | en. */
+  GOLOMT_PAGE_LANG: z.enum(['mn', 'en']).default('mn'),
+  GOLOMT_INVOICE_TTL_MINUTES: int(30),
+  GOLOMT_HTTP_TIMEOUT_MS: int(20_000),
+  /**
+   * Saved cards: pay pages request a card token, and drivers can top up with a
+   * saved card in one tap (/api/pay). The bank enables token payments per
+   * merchant on request — until it has, /api/pay answers "Merchant is not
+   * allowed to do token transaction", so leave this off until then.
+   */
+  GOLOMT_TOKEN_ENABLED: bool(false),
+
   // ---------- Platform fee ----------
   /**
    * Eplug's service fee, as a percentage added on top of the energy cost
@@ -316,4 +346,15 @@ export function qpayCallbackUrl(paymentId: string, secret: string): string {
   const token = env.QPAY_CALLBACK_TOKEN?.trim();
   const prefix = token ? `/${encodeURIComponent(token)}` : '';
   return `${origin}${env.API_BASE_PATH}/payments/callback${prefix}/${paymentId}/${secret}`;
+}
+
+/**
+ * Where Golomt sends the driver's browser once the card page is done. It lives
+ * on the driver API and names our own transaction id, so the handler knows
+ * which payment to re-check with the bank — the query string Golomt appends is
+ * never trusted on its own.
+ */
+export function golomtReturnUrl(transactionId: string): string {
+  const origin = env.GOLOMT_CALLBACK_BASE_URL ?? env.PUBLIC_BASE_URL;
+  return `${origin}${env.DRIVER_API_BASE_PATH}/payments/golomt/return/${transactionId}`;
 }

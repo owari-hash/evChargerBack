@@ -12,6 +12,7 @@ export * from './Security';
 export * from './Job';
 export * from './Log';
 export * from './Payment';
+export * from './SavedCard';
 export * from './Wallet';
 export * from './QpayToken';
 export * from './EbarimtMerchant';

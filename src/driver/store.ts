@@ -324,6 +324,20 @@ export const store = {
     return doc ? toUser(doc) : null;
   },
 
+  /** Accounts by id, batched for a list — one query, not one per row. */
+  async findUsersByIds(ids: string[]): Promise<Map<string, StoredUser>> {
+    await ready();
+    const unique = [...new Set(ids)].filter(isObjectId);
+    if (unique.length === 0) return new Map();
+    const docs = await DriverUser.find({ _id: { $in: unique } }).lean<DriverUserDoc[]>();
+    const map = new Map<string, StoredUser>();
+    for (const doc of docs) {
+      const user = toUser(doc);
+      map.set(user.id, user);
+    }
+    return map;
+  },
+
   /** As `findUserByIdTag`, batched for a transaction list — one query, not one per row. */
   async findUsersByIdTags(idTags: string[]): Promise<Map<string, StoredUser>> {
     await ready();

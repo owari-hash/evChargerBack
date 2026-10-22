@@ -58,10 +58,17 @@ async function expireReservations(): Promise<void> {
  * are past their expiry so they stop being polled forever.
  */
 async function reconcileQpayPayments(): Promise<void> {
-  if (!env.QPAY_ENABLED) return;
+  if (!env.QPAY_ENABLED && !env.GOLOMT_ENABLED) return;
 
+  // Golomt payments are left to the sweep below: a card can be charged right
+  // before the page lapses, so they only expire after the bank is asked.
   const expired = await Payment.updateMany(
-    { status: 'PENDING', paidAmount: { $lte: 0 }, expiresAt: { $lte: new Date() } },
+    {
+      status: 'PENDING',
+      paidAmount: { $lte: 0 },
+      expiresAt: { $lte: new Date() },
+      provider: { $ne: 'GOLOMT' },
+    },
     { $set: { status: 'EXPIRED' } },
   );
   if (expired.modifiedCount > 0) {
@@ -85,7 +92,7 @@ export function startMaintenanceJobs(): void {
 
   run(sweepOfflineChargePoints, 60_000);
   run(expireReservations, 60_000);
-  if (env.QPAY_ENABLED) run(reconcileQpayPayments, 120_000);
+  if (env.QPAY_ENABLED || env.GOLOMT_ENABLED) run(reconcileQpayPayments, 120_000);
 }
 
 export function stopMaintenanceJobs(): void {

@@ -1,6 +1,14 @@
 import { env } from '../config/env';
 import { Payment } from '../models/Payment';
-import { createPayment, syncPayment, toPaymentView } from '../services/payment.service';
+import {
+  createGolomtTopUp,
+  createPayment,
+  deleteSavedCard,
+  listSavedCards,
+  payGolomtTopUpWithCard,
+  syncPayment,
+  toPaymentView,
+} from '../services/payment.service';
 import {
   getOrCreateWallet,
   idTagsForWallet,
@@ -9,7 +17,8 @@ import {
   toWalletView,
   type WalletOwner,
 } from '../services/wallet.service';
-import { notFound } from './http';
+import { HttpError } from '../lib/errors';
+import { DriverError, notFound } from './http';
 
 /**
  * A driver's prepaid wallet: `USER/<account id>`. The account id always comes
@@ -27,8 +36,12 @@ export interface WalletConfig {
   minStartBalance: number;
   requireBalanceToStart: boolean;
   allowNegative: boolean;
-  /** False when QPay is switched off — the top-up form has to be hidden. */
+  /** False when QPay is switched off — the QR top-up has to be hidden. */
   topUpEnabled: boolean;
+  /** Card / SocialPay top-up through Golomt's hosted page. */
+  cardTopUpEnabled: boolean;
+  /** Cards can be saved on the bank page and charged in one tap later. */
+  savedCardsEnabled: boolean;
 }
 
 export function walletConfig(): WalletConfig {
@@ -42,6 +55,8 @@ export function walletConfig(): WalletConfig {
     requireBalanceToStart: env.WALLET_REQUIRE_BALANCE_TO_START,
     allowNegative: false,
     topUpEnabled: env.QPAY_ENABLED,
+    cardTopUpEnabled: env.GOLOMT_ENABLED,
+    savedCardsEnabled: env.GOLOMT_ENABLED && env.GOLOMT_TOKEN_ENABLED,
   };
 }
 
@@ -62,16 +77,50 @@ export function listWalletEntries(userId: string, limit: number) {
   return listEntries(ownerFor(userId), { skip: 0, limit });
 }
 
-/** Opens a QPay invoice that credits the wallet once it is paid. */
+/**
+ * Opens an invoice that credits the wallet once it is paid: a QPay QR, or a
+ * Golomt card page the client sends the driver to (`paymentUrl`).
+ */
 export async function createTopUp(input: {
   userId: string;
   amount: number;
   description: string;
   receiverCode?: string;
+  method?: 'qpay' | 'card' | 'saved_card';
+  /** card: keep the card for one-tap top-ups once paid. */
+  saveCard?: boolean;
+  /** saved_card: which of the driver's saved cards to charge. */
+  cardId?: string;
 }): Promise<Record<string, unknown>> {
   const owner = ownerFor(input.userId);
-  // The wallet has to exist before QPay's callback arrives to credit it.
+  // The wallet has to exist before the payment settles and credits it.
   await getOrCreateWallet(owner);
+  const golomtInput = {
+    amount: input.amount,
+    description: input.description,
+    userId: input.userId,
+    walletOwnerType: owner.ownerType,
+    walletOwnerId: owner.ownerId,
+  };
+
+  if (input.method === 'card' || input.method === 'saved_card') {
+    try {
+      const payment =
+        input.method === 'card'
+          ? await createGolomtTopUp({ ...golomtInput, saveCard: input.saveCard })
+          : await payGolomtTopUpWithCard({ ...golomtInput, cardId: input.cardId ?? '' });
+      return toDriverView(payment);
+    } catch (err) {
+      // The bank's own errors are logged in English; the driver gets one line.
+      if (err instanceof HttpError && err.message.startsWith('Golomt:')) {
+        throw new DriverError(
+          502,
+          'Банкны системтэй холбогдож чадсангүй. Түр хүлээгээд дахин оролдоно уу.',
+        );
+      }
+      throw err;
+    }
+  }
 
   const payment = await createPayment({
     amount: input.amount,
@@ -100,17 +149,36 @@ export async function getTopUpQr(paymentId: string) {
   };
 }
 
+/**
+ * The payment as a driver sees it. A declined card carries the bank's own
+ * reason (in Mongolian) as `declineReason`; internal errors stay internal.
+ */
+export function toDriverView(payment: Parameters<typeof toPaymentView>[0]): Record<string, unknown> {
+  const view = toPaymentView(payment);
+  const lastError = typeof view.lastError === 'string' ? view.lastError : '';
+  if (view.provider === 'GOLOMT' && view.status === 'FAILED') {
+    const bankReason = /^\d{3}: (.+)$/.exec(lastError)?.[1];
+    view.declineReason = bankReason ?? 'Картын төлбөр амжилтгүй боллоо';
+  }
+  delete view.lastError;
+  return view;
+}
+
+/** The driver's saved cards (empty when saved cards are switched off). */
+export const getSavedCards = listSavedCards;
+export const removeSavedCard = deleteSavedCard;
+
 /** The invoice as stored, or null for an unknown or malformed id. */
 export async function getTopUp(paymentId: string): Promise<Record<string, unknown> | null> {
   const payment = await Payment.findById(paymentId)
     .lean()
     .catch(() => null);
-  return payment ? toPaymentView(payment) : null;
+  return payment ? toDriverView(payment) : null;
 }
 
 /** Asks QPay whether the invoice is paid — the call that credits the wallet. */
 export async function checkTopUp(paymentId: string): Promise<Record<string, unknown>> {
   const payment = await Payment.findById(paymentId).select('+callbackSecret');
   if (!payment) throw notFound('Нэхэмжлэх олдсонгүй');
-  return toPaymentView(await syncPayment(payment));
+  return toDriverView(await syncPayment(payment));
 }

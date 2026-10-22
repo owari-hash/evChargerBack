@@ -1,8 +1,9 @@
 import type { Types } from 'mongoose';
-import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { cpIdFor } from '../lib/chargePointRef';
 import {
   env,
+  golomtReturnUrl,
   qpayCallbackUrl,
   qpayInvoiceCode,
   qpayQuickQrBankAccount,
@@ -24,10 +25,13 @@ import {
 import type { WalletOwnerType } from '../models/Wallet';
 import { Transaction } from '../models/Transaction';
 import { QpayMerchantConfig } from '../models/QpayMerchantConfig';
+import { SavedCard } from '../models/SavedCard';
 import { bus } from '../realtime/events';
 import { QpayError, qpayLogger } from './qpay/http';
 import * as merchant from './qpay/merchant.client';
 import * as quickqr from './qpay/quickqr.client';
+import * as golomt from './golomt/client';
+import { decryptSecret, encryptSecret } from './qpay/crypto';
 import { credit as creditWallet, debit as debitWallet } from './wallet.service';
 import { issueEBarimtForTransaction, issueEBarimtForPayment } from './ebarimt.service';
 import { sessionCost } from './pricing.service';
@@ -381,7 +385,7 @@ async function applyWalletTopUp(payment: PaymentDoc): Promise<void> {
         idempotencyKey: `payment:${String(payment._id)}`,
         paymentId: String(payment._id),
         idTag: payment.idTag ?? undefined,
-        createdBy: 'qpay',
+        createdBy: payment.provider === 'GOLOMT' ? 'golomt' : 'qpay',
       },
     );
 
@@ -406,6 +410,7 @@ async function applyWalletTopUp(payment: PaymentDoc): Promise<void> {
  * client polling both funnel through here, so a spoofed callback changes nothing.
  */
 export async function syncPayment(payment: PaymentDoc): Promise<PaymentDoc> {
+  if (payment.provider === 'GOLOMT') return syncGolomtPayment(payment);
   assertEnabled();
   if (!payment.invoiceId) throw badRequest('Payment has no QPay invoice yet');
 
@@ -576,6 +581,350 @@ export async function syncPayment(payment: PaymentDoc): Promise<PaymentDoc> {
   return payment;
 }
 
+/** Map a GolomtError onto our HTTP error shape. */
+function rethrowGolomt(err: unknown, context: string): never {
+  if (err instanceof golomt.GolomtError) {
+    golomt.golomtLogger.warn({ context, status: err.status, message: err.message }, 'golomt call failed');
+    throw new HttpError(err.status, `Golomt: ${err.message}`);
+  }
+  throw err;
+}
+
+/** Golomt takes fewer than 16 letters/digits: 'G' + 15 hex chars. */
+export const GOLOMT_TRANSACTION_ID = /^G[0-9A-F]{15}$/;
+const newGolomtTransactionId = () =>
+  `G${randomBytes(8).toString('hex').slice(0, 15).toUpperCase()}`;
+
+/** Most cards one driver may keep saved. */
+const MAX_SAVED_CARDS = 5;
+
+/** Saves under concurrent writers: a callback, a poll and a push can overlap. */
+async function saveTolerant(payment: PaymentDoc): Promise<PaymentDoc> {
+  try {
+    await payment.save();
+    return payment;
+  } catch (err) {
+    if ((err as Error).name !== 'VersionError') throw err;
+    return (await Payment.findById(payment._id)) ?? payment;
+  }
+}
+
+interface GolomtTopUpInput {
+  amount: number;
+  description: string;
+  userId: string;
+  walletOwnerType: WalletOwnerType;
+  walletOwnerId: string;
+}
+
+/**
+ * Open a Golomt card payment that credits a wallet once settled. The driver is
+ * sent to `paymentUrl`; the bank pushes the result to us and sends the driver
+ * back to our return URL — and both only ever lead to a signed bank reply.
+ * With `saveCard` (and token payments enabled) the card is kept for one-tap
+ * top-ups once the payment succeeds.
+ */
+export async function createGolomtTopUp(
+  input: GolomtTopUpInput & { saveCard?: boolean },
+): Promise<PaymentDoc> {
+  if (!env.GOLOMT_ENABLED) throw serviceUnavailable('Картаар төлөх үйлчилгээ түр боломжгүй байна');
+  const amount = normaliseAmount(input.amount);
+  const transactionId = newGolomtTransactionId();
+  const saveCard = Boolean(input.saveCard && env.GOLOMT_TOKEN_ENABLED);
+
+  const payment = await Payment.create({
+    senderInvoiceNo: transactionId,
+    provider: 'GOLOMT',
+    golomtMode: 'PAGE',
+    saveCard,
+    status: 'PENDING',
+    purpose: 'WALLET_TOPUP',
+    amount,
+    currency: 'MNT',
+    description: input.description.slice(0, 255),
+    userId: input.userId,
+    walletOwnerType: input.walletOwnerType,
+    walletOwnerId: input.walletOwnerId,
+    expiresAt: new Date(Date.now() + env.GOLOMT_INVOICE_TTL_MINUTES * 60_000),
+  });
+
+  try {
+    const res = await golomt.createInvoice({
+      transactionId,
+      amount,
+      callback: golomtReturnUrl(transactionId),
+      genToken: saveCard,
+    });
+    payment.invoiceId = res.invoice;
+    payment.paymentUrl = golomt.paymentPageUrl(res.invoice, 'card');
+  } catch (err) {
+    payment.status = 'FAILED';
+    payment.lastError = err instanceof Error ? err.message.slice(0, 500) : 'unknown error';
+    await payment.save();
+    rethrowGolomt(err, 'createInvoice');
+  }
+
+  await payment.save();
+  bus.emitEvent('payment.created', undefined, {
+    paymentId: String(payment._id),
+    senderInvoiceNo: transactionId,
+    invoiceId: payment.invoiceId,
+    amount,
+  });
+  return payment;
+}
+
+/**
+ * Charge a saved card server-side. The bank answers at once; a lost answer
+ * leaves the payment PENDING for the reconcile sweep to settle via /api/check,
+ * so a timeout never double-charges or silently drops a payment.
+ */
+export async function payGolomtTopUpWithCard(
+  input: GolomtTopUpInput & { cardId: string },
+): Promise<PaymentDoc> {
+  if (!env.GOLOMT_ENABLED || !env.GOLOMT_TOKEN_ENABLED) {
+    throw serviceUnavailable('Хадгалсан картаар төлөх үйлчилгээ түр боломжгүй байна');
+  }
+  const card = await SavedCard.findOne({ _id: input.cardId, userId: input.userId })
+    .select('+tokenEnc')
+    .catch(() => null);
+  if (!card) throw notFound('Карт олдсонгүй');
+  const token = decryptSecret(card.tokenEnc);
+  if (!token) throw conflict('Энэ картыг ашиглах боломжгүй боллоо. Картаа дахин нэмнэ үү.');
+
+  const amount = normaliseAmount(input.amount);
+  const transactionId = newGolomtTransactionId();
+  const payment = await Payment.create({
+    senderInvoiceNo: transactionId,
+    // Token payments have no bank invoice; our id doubles as one so the
+    // reconcile sweep (which needs an invoiceId) can find a lost reply.
+    invoiceId: transactionId,
+    provider: 'GOLOMT',
+    golomtMode: 'TOKEN',
+    savedCardId: String(card._id),
+    status: 'PENDING',
+    purpose: 'WALLET_TOPUP',
+    amount,
+    currency: 'MNT',
+    description: input.description.slice(0, 255),
+    userId: input.userId,
+    walletOwnerType: input.walletOwnerType,
+    walletOwnerId: input.walletOwnerId,
+    expiresAt: new Date(Date.now() + env.GOLOMT_INVOICE_TTL_MINUTES * 60_000),
+  });
+
+  let result: golomt.GolomtResult;
+  try {
+    result = await golomt.payWithToken({ transactionId, amount, token });
+  } catch (err) {
+    // 4xx: the bank refused the request outright, so nothing was charged.
+    // Otherwise the outcome is unknown and the sweep will ask /api/check.
+    const refused = err instanceof golomt.GolomtError && err.status >= 400 && err.status < 500;
+    if (refused) payment.status = 'FAILED';
+    payment.lastError = err instanceof Error ? err.message.slice(0, 500) : 'unknown error';
+    await payment.save();
+    rethrowGolomt(err, 'pay');
+  }
+
+  card.lastUsedAt = new Date();
+  await card.save().catch(() => undefined);
+  return applyGolomtResult(payment, result, 'pay');
+}
+
+/** Keep the card a successful PAGE payment was made with, when asked to. */
+async function rememberCard(payment: PaymentDoc, r: golomt.GolomtResult): Promise<void> {
+  if (!payment.saveCard || !r.token || !payment.userId || !env.GOLOMT_TOKEN_ENABLED) return;
+  try {
+    const tokenHash = createHash('sha256').update(r.token).digest('hex');
+    const existing = await SavedCard.findOne({ userId: payment.userId, tokenHash });
+    if (!existing && (await SavedCard.countDocuments({ userId: payment.userId })) >= MAX_SAVED_CARDS) {
+      return;
+    }
+    const card = await SavedCard.findOneAndUpdate(
+      { userId: payment.userId, tokenHash },
+      {
+        $set: {
+          tokenEnc: encryptSecret(r.token),
+          cardNumber: r.cardNumber,
+          cardHolder: r.cardHolder,
+          bank: r.bank,
+          lastUsedAt: new Date(),
+        },
+        $setOnInsert: { provider: 'GOLOMT' },
+      },
+      { upsert: true, new: true },
+    );
+    payment.savedCardId = String(card._id);
+  } catch (err) {
+    // A card that fails to save must never undo a payment that succeeded.
+    golomt.golomtLogger.error(
+      { paymentId: String(payment._id), err: (err as Error).message },
+      'failed to save card token',
+    );
+  }
+}
+
+/**
+ * The one place a Golomt reply changes a payment — whether it came from an
+ * inquiry, a token charge, a token check or a push notification. Money is
+ * credited only on a signed reply, with errorCode 000, for the full amount.
+ */
+async function applyGolomtResult(
+  payment: PaymentDoc,
+  r: golomt.GolomtResult,
+  source: string,
+): Promise<PaymentDoc> {
+  const previousStatus = payment.status as PaymentStatus;
+  if (previousStatus === 'PAID' || previousStatus === 'REFUNDED') return payment;
+  let verdict = golomt.outcome(r);
+  // A finished payment only moves on a definite answer; "still pending"
+  // from a lagging re-check must not reopen it or erase why it failed.
+  const open = previousStatus === 'PENDING' || previousStatus === 'PARTIALLY_PAID';
+  if (!open && verdict === 'PENDING') return payment;
+
+  payment.checkedAt = new Date();
+  payment.checkCount = (payment.checkCount ?? 0) + 1;
+  payment.lastError = undefined;
+
+  if (verdict !== 'PENDING' && !r.verified) {
+    golomt.golomtLogger.error(
+      { paymentId: String(payment._id), source, errorCode: r.errorCode },
+      'golomt reply failed checksum verification',
+    );
+    payment.lastError = `${source}: reply failed checksum verification`;
+    verdict = 'PENDING';
+  }
+  if (verdict === 'PAID' && r.amount < payment.amount) {
+    golomt.golomtLogger.error(
+      { paymentId: String(payment._id), source, amount: r.amount, expected: payment.amount },
+      'golomt paid amount is below the invoice amount',
+    );
+    payment.lastError = `${source}: paid ${r.amount} is below ${payment.amount}`;
+    verdict = 'PENDING';
+  }
+
+  if (verdict === 'PAID') {
+    payment.status = 'PAID';
+    payment.paidAmount = r.amount;
+    payment.paidAt ??= new Date();
+    payment.payments = [
+      {
+        paymentId: r.transactionId,
+        status: 'PAID',
+        amount: r.amount,
+        currency: 'MNT',
+        paymentWallet: r.cardNumber,
+        paymentType: r.bank,
+        transactionType: payment.golomtMode === 'TOKEN' ? 'TOKEN' : 'CARD',
+        paidAt: payment.paidAt,
+      },
+    ] as typeof payment.payments;
+    await rememberCard(payment, r);
+  } else if (verdict === 'FAILED') {
+    payment.status = 'FAILED';
+    payment.lastError = `${r.errorCode}: ${r.errorDesc ?? 'declined'}`.slice(0, 500);
+  } else if (payment.expiresAt && payment.expiresAt.getTime() < Date.now()) {
+    payment.status = 'EXPIRED';
+  }
+
+  payment = await saveTolerant(payment);
+
+  // PAID/REFUNDED returned early above, so reaching PAID here is the transition.
+  if ((payment.status as PaymentStatus) === 'PAID') {
+    await applyWalletTopUp(payment);
+    bus.emitEvent('payment.paid', undefined, {
+      paymentId: String(payment._id),
+      senderInvoiceNo: payment.senderInvoiceNo,
+      invoiceId: payment.invoiceId,
+      amount: payment.amount,
+      paidAmount: payment.paidAmount,
+    });
+    golomt.golomtLogger.info(
+      { paymentId: String(payment._id), source, paidAmount: payment.paidAmount },
+      'golomt payment settled',
+    );
+  }
+  return payment;
+}
+
+/** `syncPayment` for Golomt: ask the bank, then apply its signed reply. */
+async function syncGolomtPayment(payment: PaymentDoc): Promise<PaymentDoc> {
+  if (payment.status === 'PAID' || payment.status === 'REFUNDED') return payment;
+  if (!payment.invoiceId) throw badRequest('Payment has no Golomt invoice yet');
+
+  let r: golomt.GolomtResult;
+  try {
+    r =
+      payment.golomtMode === 'TOKEN'
+        ? await golomt.checkToken(payment.senderInvoiceNo)
+        : await golomt.inquiry(payment.senderInvoiceNo);
+  } catch (err) {
+    // The bank has no record of a token charge whose request never arrived.
+    if (
+      payment.golomtMode === 'TOKEN' &&
+      err instanceof golomt.GolomtError &&
+      err.status === 400 &&
+      /not found/i.test(err.message) &&
+      payment.createdAt &&
+      Date.now() - payment.createdAt.getTime() > 5 * 60_000
+    ) {
+      payment.status = 'FAILED';
+      payment.lastError = 'the bank has no record of this charge';
+      return saveTolerant(payment);
+    }
+    payment.lastError = err instanceof Error ? err.message.slice(0, 500) : 'unknown error';
+    payment.checkedAt = new Date();
+    await saveTolerant(payment);
+    rethrowGolomt(err, payment.golomtMode === 'TOKEN' ? 'check' : 'inquiry');
+  }
+  return applyGolomtResult(payment, r, payment.golomtMode === 'TOKEN' ? 'check' : 'inquiry');
+}
+
+/**
+ * The bank's push notification (POST, JSON). Its checksum is verified with our
+ * shared key before anything else; the bank is then asked again, as its docs
+ * advise. The push is signed with the same key as an inquiry reply, so when
+ * that re-check is unreachable or still lags behind, the push's own verdict
+ * is applied.
+ */
+export async function handleGolomtNotification(body: Record<string, unknown>): Promise<string> {
+  const transactionId = typeof body.transactionId === 'string' ? body.transactionId : '';
+  if (!GOLOMT_TRANSACTION_ID.test(transactionId)) throw badRequest('Unknown transaction');
+
+  const pushed = golomt.parseResult(transactionId, body);
+  if (!pushed.verified) throw unauthorized('Invalid checksum');
+
+  const found = await Payment.findOne({ senderInvoiceNo: transactionId, provider: 'GOLOMT' });
+  if (!found) throw notFound('Payment not found');
+  await Payment.updateOne(
+    { _id: found._id },
+    { $set: { callbackAt: new Date() }, $inc: { callbackCount: 1 } },
+  );
+
+  let payment = (await Payment.findById(found._id)) ?? found;
+  try {
+    payment = await syncGolomtPayment(payment);
+  } catch {
+    payment = (await Payment.findById(found._id)) ?? payment;
+  }
+  if (payment.status === 'PENDING' || payment.status === 'PARTIALLY_PAID' || payment.status === 'EXPIRED') {
+    payment = await applyGolomtResult(payment, pushed, 'push');
+  }
+  return payment.status;
+}
+
+/** A driver's saved cards, newest first. */
+export async function listSavedCards(userId: string): Promise<Record<string, unknown>[]> {
+  if (!env.GOLOMT_TOKEN_ENABLED) return [];
+  const cards = await SavedCard.find({ userId }).sort({ createdAt: -1 });
+  return cards.map((c) => c.toJSON() as Record<string, unknown>);
+}
+
+export async function deleteSavedCard(userId: string, cardId: string): Promise<boolean> {
+  const res = await SavedCard.deleteOne({ _id: cardId, userId }).catch(() => ({ deletedCount: 0 }));
+  return res.deletedCount > 0;
+}
+
 /** Timing-safe comparison of two callback secrets. */
 function secretMatches(expected: string | null | undefined, provided: string): boolean {
   if (!expected) return false;
@@ -611,10 +960,11 @@ export async function handleCallback(
 
 /** Cancel an unpaid invoice on QPay and locally. */
 export async function cancelPayment(payment: PaymentDoc): Promise<PaymentDoc> {
-  assertEnabled();
+  if (payment.provider !== 'GOLOMT') assertEnabled();
   if (payment.status === 'PAID') throw conflict('A paid invoice cannot be canceled; refund it instead');
 
-  if (payment.invoiceId) {
+  // Golomt has no cancel call; an unpaid page simply lapses on its side.
+  if (payment.invoiceId && payment.provider !== 'GOLOMT') {
     try {
       if (payment.provider === 'QPAY_QUICKQR') await quickqr.cancelInvoice(payment.invoiceId);
       else await merchant.cancelInvoice(payment.invoiceId);
@@ -642,6 +992,9 @@ export async function refundPayment(payment: PaymentDoc, note?: string): Promise
   if (payment.status !== 'PAID') throw conflict('Only a PAID invoice can be refunded');
   if (payment.provider === 'QPAY_QUICKQR') {
     throw conflict('QuickQR invoices cannot be refunded through the API; refund them in QPay');
+  }
+  if (payment.provider === 'GOLOMT') {
+    throw conflict('Golomt card payments are refunded through the bank, not the API');
   }
   const leg = payment.payments?.find((p) => !p.status || p.status.toUpperCase() === 'PAID');
   if (!leg) throw conflict('No settled QPay payment to refund');
@@ -692,11 +1045,16 @@ export async function reconcilePendingPayments(limit = 50): Promise<{
   paid: number;
   expired: number;
 }> {
-  if (!env.QPAY_ENABLED) return { checked: 0, paid: 0, expired: 0 };
+  const providers = [
+    ...(env.QPAY_ENABLED ? (['QPAY', 'QPAY_QUICKQR'] as const) : []),
+    ...(env.GOLOMT_ENABLED ? (['GOLOMT'] as const) : []),
+  ];
+  if (providers.length === 0) return { checked: 0, paid: 0, expired: 0 };
 
   const pending = await Payment.find({
     status: { $in: ['PENDING', 'PARTIALLY_PAID'] },
     invoiceId: { $ne: null },
+    provider: { $in: providers },
   })
     .sort({ createdAt: 1 })
     .limit(limit)

@@ -1,7 +1,7 @@
 import { Schema, model, type InferSchemaType, type HydratedDocument } from 'mongoose';
 import { WALLET_OWNER_TYPES } from './Wallet';
 
-export const PAYMENT_PROVIDERS = ['QPAY', 'QPAY_QUICKQR'] as const;
+export const PAYMENT_PROVIDERS = ['QPAY', 'QPAY_QUICKQR', 'GOLOMT'] as const;
 export type PaymentProvider = (typeof PAYMENT_PROVIDERS)[number];
 
 /**
@@ -39,13 +39,16 @@ const qpayPaymentSchema = new Schema(
 
 const paymentSchema = new Schema(
   {
-    /** Our own reference, sent to QPay as sender_invoice_no. Unique = idempotency key. */
+    /**
+     * Our own reference, sent to QPay as sender_invoice_no and to Golomt as
+     * transactionId. Unique = idempotency key.
+     */
     senderInvoiceNo: { type: String, required: true, unique: true },
     provider: { type: String, enum: PAYMENT_PROVIDERS, default: 'QPAY', index: true },
     purpose: { type: String, enum: PAYMENT_PURPOSES, default: 'CHARGING', index: true },
     status: { type: String, enum: PAYMENT_STATUSES, default: 'PENDING', index: true },
 
-    /** QPay side identifiers. */
+    /** Provider side identifiers (Golomt: the hosted page's invoice id). */
     invoiceId: { type: String, index: true, sparse: true },
     invoiceCode: { type: String },
     merchantId: { type: String }, // QuickQR sub-merchant, when applicable
@@ -73,6 +76,17 @@ const paymentSchema = new Schema(
     qrText: { type: String },
     qrImage: { type: String, select: false }, // base64 PNG, fetched only on demand
     shortUrl: { type: String },
+    /** Golomt: the hosted card page the driver is sent to, and its SocialPay twin. */
+    paymentUrl: { type: String },
+    socialPayUrl: { type: String },
+    /**
+     * Golomt only. PAGE: the driver pays on the bank's hosted page (checked
+     * with /api/inquiry). TOKEN: a saved card charged server-side (/api/check).
+     */
+    golomtMode: { type: String, enum: ['PAGE', 'TOKEN'] },
+    /** PAGE: keep the card's token once paid. TOKEN: the card that was charged. */
+    saveCard: { type: Boolean },
+    savedCardId: { type: String },
     deeplinks: {
       type: [
         new Schema(

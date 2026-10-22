@@ -4,7 +4,9 @@ import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { env } from '../../config/env';
 import { notFound } from '../../lib/errors';
-import { PAYMENT_STATUSES, Payment } from '../../models/Payment';
+import { PAYMENT_PROVIDERS, PAYMENT_PURPOSES, PAYMENT_STATUSES, Payment } from '../../models/Payment';
+import { store } from '../../driver/store';
+import { normalizePhone } from '../../driver/validation';
 import {
   cancelPayment,
   createPayment,
@@ -151,6 +153,10 @@ paymentsRouter.post(
 
 const listQuery = paginationSchema.extend({
   status: z.enum(PAYMENT_STATUSES).optional(),
+  provider: z.enum(PAYMENT_PROVIDERS).optional(),
+  purpose: z.enum(PAYMENT_PURPOSES).optional(),
+  /** Driver phone, our transaction id or the provider's invoice id. */
+  q: z.string().trim().max(64).optional(),
   chargePointId: z.string().optional(),
   idTag: z.string().optional(),
   transactionId: z.coerce.number().int().optional(),
@@ -166,6 +172,18 @@ paymentsRouter.get(
     const q = req.query as unknown as z.infer<typeof listQuery>;
     const filter: Record<string, unknown> = {};
     if (q.status) filter.status = q.status;
+    if (q.provider) filter.provider = q.provider;
+    if (q.purpose) filter.purpose = q.purpose;
+    if (q.q) {
+      // One box for what support is usually handed: a phone number, or the
+      // id on the driver's receipt / bank page.
+      const term = q.q;
+      const or: Record<string, unknown>[] = [{ senderInvoiceNo: term }, { invoiceId: term }];
+      const phone = normalizePhone(term);
+      const driver = phone ? await store.findUserByPhone(phone).catch(() => null) : null;
+      if (driver) or.push({ userId: driver.id }, { walletOwnerId: driver.id });
+      filter.$or = or;
+    }
     if (q.chargePointId) filter.chargePointId = await requireChargePointRef(q.chargePointId);
     if (q.idTag) filter.idTag = q.idTag;
     if (q.transactionId !== undefined) filter.transactionId = q.transactionId;
@@ -175,12 +193,33 @@ paymentsRouter.get(
     }
 
     const { skip, limit } = paginate(q);
-    const [data, total] = await Promise.all([
+    const [data, total, totals] = await Promise.all([
       Payment.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       Payment.countDocuments(filter),
+      Payment.aggregate<{ _id: string; count: number; amount: number }>([
+        { $match: filter },
+        { $group: { _id: '$status', count: { $sum: 1 }, amount: { $sum: '$paidAmount' } } },
+      ]),
     ]);
 
-    res.json({ data: data.map(toPaymentView), total, page: q.page, limit: q.limit });
+    // Who paid, so support can match a call to a row without another lookup.
+    const drivers = await store
+      .findUsersByIds(data.map((p) => p.userId ?? p.walletOwnerId ?? '').filter(Boolean))
+      .catch(() => new Map<string, never>());
+
+    res.json({
+      data: data.map((p) => {
+        const driver = drivers.get(p.userId ?? p.walletOwnerId ?? '');
+        return {
+          ...toPaymentView(p),
+          driver: driver ? { name: driver.name, phone: driver.phone } : null,
+        };
+      }),
+      total,
+      page: q.page,
+      limit: q.limit,
+      summary: Object.fromEntries(totals.map((t) => [t._id, { count: t.count, amount: t.amount }])),
+    });
   }),
 );
 
