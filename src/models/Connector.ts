@@ -32,6 +32,20 @@ const connectorSchema = new Schema(
     lastMeterWh: { type: Number },
     lastPowerW: { type: Number },
     lastSocPercent: { type: Number },
+    /**
+     * An in-flight RemoteStartTransaction this driver has not yet been
+     * confirmed or refused for — set atomically by `remoteStart()` so a
+     * second scan of the same QR code, arriving before the station's own
+     * StartTransaction.req updates `status`/`currentTransactionId`, is
+     * refused instead of also being sent to the station. Cleared as soon as
+     * the station answers (accepted, rejected, or a later status/transaction
+     * update supersedes it), or once `at` is old enough to be ignored as
+     * stale — see PENDING_START_STALE_MS in driver/charging.ts.
+     */
+    pendingStart: {
+      idTag: { type: String },
+      at: { type: Date },
+    },
   },
   {
     timestamps: true,

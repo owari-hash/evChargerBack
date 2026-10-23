@@ -435,16 +435,70 @@ async function sendToStation<T>(cpId: string, action: string, payload: unknown, 
     return await connectionManager.send<T>(cpId, action, payload, issuedBy);
   } catch (err) {
     if (err instanceof HttpError && err.status === 503) {
-      throw new DriverError(503, 'Станц сүлжээнд холбогдоогүй байна. Түр хүлээгээд дахин оролдоно уу.');
+      throw new DriverError(503, 'Станц холбогдохгүй байна. Түр хүлээгээд дахин оролдоно уу.');
     }
     if (err instanceof CallTimeoutError) {
-      throw new DriverError(504, 'Станц хугацаандаа хариу өгсөнгүй. Дахин оролдоно уу.');
+      throw new DriverError(504, 'Станц хариу өгсөнгүй. Дахин оролдоно уу.');
     }
     if (err instanceof OcppRpcError) {
-      throw new DriverError(502, 'Станц хүсэлтийг гүйцэтгэж чадсангүй. Дахин оролдоно уу.');
+      throw new DriverError(502, 'Станцад алдаа гарлаа. Дахин оролдоно уу.');
     }
     throw err;
   }
+}
+
+/**
+ * How long a claim from {@link claimConnectorForStart} blocks a second scan.
+ * Long enough to cover the RemoteStartTransaction round trip plus the
+ * station's own StartTransaction.req (a few seconds, worst case); short
+ * enough that a claim nothing ever answers — the RPC call itself throws
+ * before reaching the `finally` that releases it, say — does not strand the
+ * connector. Real success clears the claim immediately rather than waiting
+ * this out; this is only the ceiling for the unanswered case.
+ */
+const PENDING_START_STALE_MS = 25_000;
+
+/**
+ * Atomically marks a connector as "a start is in flight for this idTag" —
+ * the guard a second, near-simultaneous scan of the same QR code needs. Two
+ * `remoteStart` calls can both read `Connector.status: 'Available'` before
+ * either's RemoteStartTransaction reaches the station (status only updates
+ * once the station's StatusNotification/StartTransaction arrives, seconds
+ * later); without an atomic claim here both would be sent to the station,
+ * and the second StartTransaction.req would look like a reconnect and
+ * silently close the first driver's genuinely live session (see
+ * `transaction.service.ts`'s stale-transaction cleanup).
+ *
+ * Returns true if this call won the claim, false if another is already
+ * in flight (and not yet stale).
+ */
+async function claimConnectorForStart(
+  chargePointId: unknown,
+  connectorId: number,
+  idTag: string,
+): Promise<boolean> {
+  const staleBefore = new Date(Date.now() - PENDING_START_STALE_MS);
+  const claimed = await Connector.findOneAndUpdate(
+    {
+      chargePointId,
+      connectorId,
+      availability: { $ne: 'Inoperative' },
+      status: { $in: ['Available', 'Preparing', 'Reserved'] },
+      $or: [{ pendingStart: null }, { 'pendingStart.at': { $lt: staleBefore } }],
+    },
+    { $set: { pendingStart: { idTag, at: new Date() } } },
+  );
+  return claimed !== null;
+}
+
+/** Releases a claim this call took out, so a retry (by this driver or the
+ *  next one) does not have to wait out the full staleness window. */
+async function releaseConnectorClaim(chargePointId: unknown, connectorId: number): Promise<void> {
+  await Connector.updateOne({ chargePointId, connectorId }, { $set: { pendingStart: null } }).catch(
+    () => {
+      // Best-effort: the claim still expires on its own via PENDING_START_STALE_MS.
+    },
+  );
 }
 
 /** A connector a new session can start on right now. */
@@ -484,10 +538,10 @@ export async function remoteStart(
     throw badRequest(`Unknown idTag "${idTag}"`);
   }
   if (!connectionManager.isOnline(cp.cpId)) {
-    throw new DriverError(503, 'Станц сүлжээнд холбогдоогүй байна. Түр хүлээгээд дахин оролдоно уу.');
+    throw new DriverError(503, 'Станц холбогдохгүй байна. Түр хүлээгээд дахин оролдоно уу.');
   }
   if (await Transaction.exists({ idTag, status: 'Active' })) {
-    throw new DriverError(409, 'Танд үргэлжилж буй цэнэглэлт байна. Эхлээд түүнийгээ дуусгана уу.');
+    throw new DriverError(409, 'Танд цэнэглэлт явж байна. Эхлээд дуусгана уу.');
   }
   if (env.WALLET_ENABLED) {
     const isInternal = await isInternalTag(idTag);
@@ -496,7 +550,7 @@ export async function remoteStart(
       if (!funds.ok) {
         throw new DriverError(
           402,
-          `Хэтэвчний үлдэгдэл хүрэлцэхгүй байна. Цэнэглэлт эхлүүлэхэд хамгийн багадаа ${funds.required.toLocaleString('mn-MN')}₮ шаардлагатай. Хэтэвчээ цэнэглэнэ үү.`,
+          `Үлдэгдэл хүрэхгүй байна. Хамгийн багадаа ${funds.required.toLocaleString('mn-MN')}₮ хэрэгтэй. Хэтэвчээ цэнэглэнэ үү.`,
         );
       }
     }
@@ -506,24 +560,44 @@ export async function remoteStart(
   if (connectorId !== undefined) {
     const target = connectors.find((c) => c.connectorId === connectorId);
     if (!target) {
-      throw new DriverError(400, 'Энэ станцад ийм дугаартай холбогч байхгүй байна');
+      throw new DriverError(400, 'Ийм дугаартай холбогч алга.');
     }
     if (!(await startable(target, idTag))) {
-      throw new DriverError(409, 'Энэ холбогч одоо ашиглах боломжгүй байна. Өөр холбогч сонгоно уу.');
+      throw new DriverError(409, 'Энэ холбогч завгүй байна. Өөр холбогч сонгоно уу.');
+    }
+
+    // The QR sticker is per-connector, so two drivers can scan the same code
+    // within moments of each other. `startable()` just read a status that is
+    // seconds stale by nature (it only updates once the station reports
+    // back) — this atomic claim is what actually stops the second scan from
+    // also being sent to the station.
+    if (!(await claimConnectorForStart(cp._id, connectorId, idTag))) {
+      throw new DriverError(409, 'Өөр хүн энэ холбогчийг дөнгөж эзэллээ. Өөр холбогч сонгоно уу.');
     }
   } else if (connectors.length > 0) {
     const free = await Promise.all(connectors.map((c) => startable(c, idTag)));
     if (!free.some(Boolean)) {
-      throw new DriverError(409, 'Одоогоор сул холбогч алга. Түр хүлээгээд дахин оролдоно уу.');
+      throw new DriverError(409, 'Сул холбогч алга байна. Түр хүлээгээд дахин оролдоно уу.');
     }
   }
 
-  return sendToStation<{ status: string }>(
-    cp.cpId,
-    'RemoteStartTransaction',
-    { idTag, ...(connectorId ? { connectorId } : {}) },
-    issuedBy,
-  );
+  try {
+    const result = await sendToStation<{ status: string }>(
+      cp.cpId,
+      'RemoteStartTransaction',
+      { idTag, ...(connectorId ? { connectorId } : {}) },
+      issuedBy,
+    );
+    // Rejected outright: no StartTransaction is coming, so the next attempt
+    // (by this driver or another) should not have to wait out the claim.
+    if (connectorId !== undefined && result.status !== 'Accepted') {
+      await releaseConnectorClaim(cp._id, connectorId);
+    }
+    return result;
+  } catch (err) {
+    if (connectorId !== undefined) await releaseConnectorClaim(cp._id, connectorId);
+    throw err;
+  }
 }
 
 export async function remoteStop(transactionId: number, issuedBy: string): Promise<{ status: string }> {
@@ -566,7 +640,7 @@ export async function unlockSessionConnector(
   issuedBy: string,
 ): Promise<{ status: string }> {
   const tx = await Transaction.findById(transactionId);
-  if (!tx) throw notFound('Тухайн цэнэглэлтийг олсонгүй');
+  if (!tx) throw notFound('Цэнэглэлт олдсонгүй');
 
   // Unlocking mid-charge would drop the contactor with current flowing. The
   // station is the final authority, but do not even ask.

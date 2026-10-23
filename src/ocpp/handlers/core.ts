@@ -221,6 +221,9 @@ export async function onStatusNotification(
         vendorId: payload.vendorId,
         vendorErrorCode: payload.vendorErrorCode,
         statusTimestamp: timestamp,
+        // The station's own report is authoritative now — any remoteStart()
+        // claim on this connector has either landed or been overtaken by it.
+        pendingStart: null,
       },
       $setOnInsert: { chargePointId: conn.ref, connectorId: payload.connectorId },
     },
