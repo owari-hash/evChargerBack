@@ -48,6 +48,7 @@ const clientInputSchema = z.object({
     })
     .optional()
     .nullable(),
+  allowedMenus: z.array(z.string()).optional().nullable(),
 });
 
 async function assertEbarimtMerchant(id: string | null | undefined): Promise<void> {
@@ -194,6 +195,7 @@ clientsRouter.post(
       feePercent: body.feePercent ?? undefined,
       ebarimtMerchantId: body.ebarimtMerchantId || undefined,
       payoutAccount: body.payoutAccount ?? undefined,
+      allowedMenus: body.allowedMenus && body.allowedMenus.length > 0 ? body.allowedMenus : undefined,
     });
 
     if (body.password && body.email) {
@@ -205,6 +207,7 @@ clientsRouter.post(
           name: created.name,
           role: 'CLIENT',
           clientId: created._id,
+          allowedMenus: created.allowedMenus && created.allowedMenus.length > 0 ? created.allowedMenus : undefined,
           isActive: created.isActive ?? true,
         },
         { upsert: true, new: true },
@@ -266,6 +269,11 @@ clientsRouter.patch(
       }
     }
 
+    if (body.allowedMenus !== undefined) {
+      const menus = body.allowedMenus && body.allowedMenus.length > 0 ? body.allowedMenus : [];
+      await User.updateMany({ clientId: updated._id }, { $set: { allowedMenus: menus } });
+    }
+
     const stationCount = await ChargePoint.countDocuments({ clientId: updated._id });
 
     res.json({
@@ -310,6 +318,7 @@ clientsRouter.post(
         name: client.name,
         role: 'CLIENT',
         clientId: client._id,
+        allowedMenus: client.allowedMenus && client.allowedMenus.length > 0 ? client.allowedMenus : undefined,
         isActive: body.isActive ?? true,
       },
       { upsert: true, new: true },

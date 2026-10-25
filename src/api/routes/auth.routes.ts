@@ -34,16 +34,24 @@ authRouter.post(
     }
 
     let clientName: string | undefined;
+    let clientAllowedMenus: string[] | undefined;
     if (user.clientId) {
-      const client = await Client.findById(user.clientId).select('name isActive').lean();
+      const client = await Client.findById(user.clientId).select('name isActive allowedMenus').lean();
       if (!client || !client.isActive) {
         throw unauthorized('Харилцагчийн бүртгэл идэвхгүй байна');
       }
       clientName = client.name;
+      if (client.allowedMenus && client.allowedMenus.length > 0) {
+        clientAllowedMenus = client.allowedMenus;
+      }
     }
 
     user.lastLoginAt = new Date();
     await user.save();
+
+    const allowedMenus = (user.allowedMenus && user.allowedMenus.length > 0)
+      ? user.allowedMenus
+      : clientAllowedMenus;
 
     const principal: AuthPrincipal = {
       id: String(user._id),
@@ -51,7 +59,7 @@ authRouter.post(
       role: user.role,
       clientId: user.clientId ? String(user.clientId) : undefined,
       clientName,
-      allowedMenus: user.allowedMenus && user.allowedMenus.length > 0 ? user.allowedMenus : undefined,
+      allowedMenus,
     };
     res.json({ token: signToken(principal), user: principal });
   }),

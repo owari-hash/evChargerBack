@@ -22,6 +22,7 @@ const clientSchema = new Schema(
       accountNumber: { type: String, trim: true },
       accountName: { type: String, trim: true },
     },
+    allowedMenus: { type: [String], default: undefined },
   },
   {
     timestamps: true,

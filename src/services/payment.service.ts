@@ -439,7 +439,7 @@ export async function syncPayment(payment: PaymentDoc): Promise<PaymentDoc> {
         // is the NET after QPay's fee — crediting that would short the driver.
         amount: num(r.amount),
         currency: r.currency ?? 'MNT',
-        paymentWallet: r.wallet_customer_id,
+        paymentWallet: undefined,
         transactionType: r.paid_by,
         paidAt: r.payment_status_date ? new Date(r.payment_status_date) : undefined,
       }));
