@@ -9,6 +9,7 @@ import { hasBalanceToStart, isInternalTag } from '../services/wallet.service';
 import { ChargePoint } from '../models/ChargePoint';
 import { Client } from '../models/Client';
 import {
+  activeTariffZone,
   currentStationTariff,
   driverTariff,
   feePercentForStation,
@@ -239,6 +240,18 @@ function toStation(cp: RawChargePoint, rawConnectors: RawConnector[], feePercent
     // zone starts — nothing has to push an update for this to change.
     tariffPerKwh: driverTariff(currentStationTariff(cp), feePercent),
     baseTariffPerKwh: currentStationTariff(cp),
+    defaultTariffPerKwh: cp.tariffPerKwh,
+    currentTariffZoneName: activeTariffZone(cp.tariffZones, new Date())?.name || undefined,
+    tariffZones: cp.tariffZones?.length
+      ? [...cp.tariffZones]
+          .sort((a, b) => a.startMinute - b.startMinute)
+          .map(({ name, startMinute, endMinute, tariffPerKwh }) => ({
+            name: name || undefined,
+            startMinute,
+            endMinute,
+            tariffPerKwh,
+          }))
+      : undefined,
     feePercent,
     vendor: cp.chargePointVendor,
     model: cp.chargePointModel,
@@ -374,10 +387,28 @@ interface RawTransaction {
   lastSocPercent?: number;
   stopReason?: string | null;
   ebarimt?: unknown;
+  /** Station's flat rate at start; the blended rate once billed. */
+  tariffPerKwh?: number;
+  /** The station's time-of-day zones as they were when the session started. */
+  tariffZones?: TariffZone[];
+}
+
+/**
+ * The rate this session is billed at: while running, the zone in effect right
+ * now from the zones frozen at start (so a later price edit does not touch
+ * it); once finished, the blended rate it was actually billed at.
+ */
+function sessionTariff(tx: RawTransaction): { tariffPerKwh?: number; tariffZoneName?: string } {
+  if (tx.status !== 'Active') return { tariffPerKwh: tx.tariffPerKwh };
+  const zone = activeTariffZone(tx.tariffZones, new Date());
+  return zone
+    ? { tariffPerKwh: zone.tariffPerKwh, tariffZoneName: zone.name || undefined }
+    : { tariffPerKwh: tx.tariffPerKwh };
 }
 
 function toSession(tx: RawTransaction): ChargingSession {
   return {
+    ...sessionTariff(tx),
     transactionId: tx._id,
     chargePointId: String(tx.chargePointId),
     connectorId: tx.connectorId,

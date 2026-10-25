@@ -54,6 +54,12 @@ export interface Station {
   tariffPerKwh?: number;
   /** The station's own tariff, before the fee. */
   baseTariffPerKwh?: number;
+  /** The rate outside every time-of-day zone. */
+  defaultTariffPerKwh?: number;
+  /** Name of the time-of-day zone in effect right now, if one is and it is named. */
+  currentTariffZoneName?: string;
+  /** Time-of-day rates, sorted by start; absent when the station has one flat rate. */
+  tariffZones?: DriverTariffZone[];
   /** Eplug's service fee on this station, in percent. */
   feePercent?: number;
   vendor?: string;
@@ -86,7 +92,24 @@ export interface EBarimtData {
   error?: string;
 }
 
+/** A time-of-day rate. Minutes are Mongolia local time since midnight. */
+export interface DriverTariffZone {
+  name?: string;
+  startMinute: number;
+  endMinute: number;
+  tariffPerKwh: number;
+}
+
 export interface ChargingSession {
+  /**
+   * Per kWh this session is billed at: the zone in effect now while running
+   * (from the zones frozen at its start), the blended rate once finished.
+   */
+  tariffPerKwh?: number;
+  /** Running sessions: name of the time-of-day zone being billed right now. */
+  tariffZoneName?: string;
+  /** Live feed only: the driver is an internal user and charges free. */
+  isInternal?: boolean;
   transactionId: number;
   chargePointId: string;
   stationName?: string;

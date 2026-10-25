@@ -33,6 +33,7 @@ import {
 import type { StoredUser } from '../store';
 import type { ChargingSession } from '../types';
 import { stationQuerySchema } from '../validation';
+import { isInternalTag } from '../../services/wallet.service';
 import {
   checkTopUp,
   createTopUp,
@@ -115,7 +116,13 @@ stationRoutes.get(
       availableConnectors: station.availableConnectors,
       totalConnectors: station.totalConnectors,
       tariffPerKwh: station.tariffPerKwh,
-      session,
+      defaultTariffPerKwh: station.defaultTariffPerKwh,
+      currentTariffZoneName: station.currentTariffZoneName,
+      tariffZones: station.tariffZones,
+      session:
+        session && user?.idTag
+          ? { ...session, isInternal: await isInternalTag(user.idTag) }
+          : session,
     };
   }),
 );

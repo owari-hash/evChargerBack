@@ -61,14 +61,22 @@ function localMidnightUtc(date: Date): Date {
   return new Date(localMidnightShifted - MN_OFFSET_MINUTES * 60_000);
 }
 
+/** The zone covering `at`, if any. */
+export function activeTariffZone(
+  zones: TariffZone[] | null | undefined,
+  at: Date,
+): TariffZone | undefined {
+  const minute = minuteOfDay(at);
+  return (zones ?? []).find((z) => minute >= z.startMinute && minute < z.endMinute);
+}
+
 /** The zone covering `at`, or `fallback` (the station's flat rate) outside all of them. */
 export function tariffZoneAt(
   zones: TariffZone[] | null | undefined,
   at: Date,
   fallback: number | null | undefined,
 ): number | undefined {
-  const minute = minuteOfDay(at);
-  const zone = (zones ?? []).find((z) => minute >= z.startMinute && minute < z.endMinute);
+  const zone = activeTariffZone(zones, at);
   return zone ? zone.tariffPerKwh : (fallback ?? undefined);
 }
 
