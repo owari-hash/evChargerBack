@@ -38,6 +38,7 @@ import { settlementsRouter } from './routes/settlements.routes';
 import { reportsRouter } from './routes/reports.routes';
 import { vehicleDetectionsRouter } from './routes/vehicleDetections.routes';
 import { adminNotificationsRouter } from './routes/notifications.routes';
+import { analyticsRouter } from './routes/analytics.routes';
 
 export function createApp(): Express {
   const app = express();
@@ -176,6 +177,7 @@ export function createApp(): Express {
   api.use('/events', eventsRouter);
   api.use('/vehicle-detections', vehicleDetectionsRouter);
   api.use('/notifications', adminNotificationsRouter);
+  api.use('/analytics', analyticsRouter);
 
   app.use(base || '/', api);
 
