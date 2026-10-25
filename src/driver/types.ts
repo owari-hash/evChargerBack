@@ -75,7 +75,7 @@ export interface EBarimtData {
   customerTin?: string;
   totalAmount: number;
   totalVAT: number;
-  status: 'SUCCESS' | 'FAILED' | 'PENDING';
+  status: 'SUCCESS' | 'FAILED' | 'PENDING' | 'REFUNDED';
   issuedAt?: string;
   error?: string;
 }

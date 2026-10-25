@@ -38,8 +38,15 @@ async function postReceipt(baseUrl: string, payload: unknown): Promise<Record<st
   if (!res.ok) {
     throw new ReceiptError(`PosAPI HTTP ${res.status}: ${String(data?.message ?? data?.error ?? '').slice(0, 200)}`);
   }
-  if (!(data?.id || data?.receiptId)) {
-    throw new ReceiptError('PosAPI answered without a receipt id');
+  // A valid receipt may have DDTD (id/receiptId/ddtd/billId) or only a lottery number
+  // (lottery/lotteryNo) when the merchant is not yet a VAT taxpayer (НӨАТ төлөгч биш).
+  const hasReceiptId = Boolean(data?.id || data?.receiptId || data?.ddtd || data?.billId);
+  const hasLottery = Boolean(data?.lottery || data?.lotteryNo || data?.lottery_no);
+  const hasQr = Boolean(data?.qrData || data?.qr || data?.qrCode);
+  const isOkStatus = data?.status === 'SUCCESS' || data?.success === true;
+
+  if (!hasReceiptId && !hasLottery && !hasQr && !isOkStatus) {
+    throw new ReceiptError('PosAPI answered without receipt identification (no DDTD or lottery number)');
   }
   return data;
 }
@@ -402,13 +409,17 @@ export async function issueEBarimtForTransaction(
 
   try {
     const data = await postReceipt(baseUrl, payload);
-    const receiptId = String(data.id || data.receiptId);
+    const rawReceiptId = data.id || data.receiptId || data.ddtd || data.billId;
+    const receiptId = rawReceiptId ? String(rawReceiptId) : undefined;
+    const lottery = data.lottery || data.lotteryNo || data.lottery_no ? String(data.lottery || data.lotteryNo || data.lottery_no) : undefined;
+    const qrData = data.qrData || data.qr || data.qrCode || data.qr_data ? String(data.qrData || data.qr || data.qrCode || data.qr_data) : undefined;
+
     const ebarimtData = {
       receiptId,
       type: receiptType,
-      qrData: data.qrData || data.qr || data.qrCode || undefined,
+      qrData,
       // B2B receipts carry no lottery; never invent one.
-      lottery: data.lottery || data.lotteryNo || undefined,
+      lottery,
       merchantTin,
       customerNo: payload.customerNo,
       customerTin: isB2B ? options.customerTin : undefined,
@@ -421,7 +432,7 @@ export async function issueEBarimtForTransaction(
     await Transaction.updateOne({ _id: transactionId }, { $set: { ebarimt: ebarimtData } });
     tx.ebarimt = ebarimtData;
     ebarimtLogger.info(
-      { transactionId, receiptId, amount: finalAmount, merchantTin },
+      { transactionId, receiptId: receiptId || '(none - non-VAT)', lottery, amount: finalAmount, merchantTin },
       '🧾 [E-BARIMT] Transaction receipt issued',
     );
 
@@ -550,12 +561,16 @@ export async function issueEBarimtForPayment(
 
   try {
     const data = await postReceipt(baseUrl, payload);
-    const receiptId = String(data.id || data.receiptId);
+    const rawReceiptId = data.id || data.receiptId || data.ddtd || data.billId;
+    const receiptId = rawReceiptId ? String(rawReceiptId) : undefined;
+    const lottery = data.lottery || data.lotteryNo || data.lottery_no ? String(data.lottery || data.lotteryNo || data.lottery_no) : undefined;
+    const qrData = data.qrData || data.qr || data.qrCode || data.qr_data ? String(data.qrData || data.qr || data.qrCode || data.qr_data) : undefined;
+
     const ebarimtData = {
       receiptId,
       type: receiptType,
-      qrData: data.qrData || data.qr || data.qrCode || undefined,
-      lottery: data.lottery || data.lotteryNo || undefined,
+      qrData,
+      lottery,
       merchantTin,
       customerNo: payload.customerNo,
       customerTin: isB2B ? options.customerTin : undefined,
@@ -568,7 +583,7 @@ export async function issueEBarimtForPayment(
     await Payment.updateOne({ _id: payment._id }, { $set: { ebarimt: ebarimtData } });
     payment.ebarimt = ebarimtData;
     ebarimtLogger.info(
-      { paymentId: String(payment._id), receiptId, amount: finalAmount },
+      { paymentId: String(payment._id), receiptId: receiptId || '(none - non-VAT)', lottery, amount: finalAmount },
       '🧾 [E-BARIMT] Payment receipt issued',
     );
 
@@ -693,9 +708,13 @@ export async function checkEbarimtMerchant(merchantId: string) {
 // ---------------------------------------------------------------------------
 
 /** Receipts written by the fallback paths above never reached the PosAPI. */
-function isLocalOnlyReceipt(e: { receiptId?: string | null; error?: string | null }): boolean {
+function isLocalOnlyReceipt(e: { receiptId?: string | null; lottery?: string | null; error?: string | null }): boolean {
   const id = e.receiptId ?? '';
-  return !id || id.startsWith('MOCK-') || id.startsWith('REC-') || Boolean(e.error);
+  const lottery = e.lottery ?? '';
+  // Neither DDTD nor lottery means no receipt was returned by PosAPI
+  if (!id && !lottery) return true;
+  if (id && (id.startsWith('MOCK-') || id.startsWith('REC-'))) return true;
+  return Boolean(e.error);
 }
 
 /** PosAPI 3.0 wants the receipt's own date, `yyyy-MM-dd HH:mm:ss`, Ulaanbaatar time. */
@@ -717,7 +736,8 @@ export async function returnEBarimtForTransaction(
 ): Promise<{ returned: boolean }> {
   const e = tx.ebarimt;
   // Nothing was issued (none requested, or the PosAPI call failed): nothing to return.
-  if (!e?.receiptId || e.status !== 'SUCCESS') return { returned: false };
+  if (!e || e.status !== 'SUCCESS') return { returned: false };
+  if (!e.receiptId && !e.lottery) return { returned: false };
 
   // A fake receipt left by the old fallback code never reached the PosAPI.
   if (isLocalOnlyReceipt(e)) {
@@ -732,6 +752,23 @@ export async function returnEBarimtForTransaction(
       },
     );
     return { returned: false };
+  }
+
+  // A receipt without a PosAPI id/DDTD (non-VAT payer with only a lottery number)
+  // cannot be deleted by id at PosAPI. Mark it refunded locally so money can be safely refunded.
+  if (!e.receiptId) {
+    await Transaction.updateOne(
+      { _id: tx._id },
+      {
+        $set: {
+          'ebarimt.status': 'REFUNDED',
+          'ebarimt.returnedAt': new Date(),
+          'ebarimt.returnResponse': { skipped: 'receipt has no DDTD/receiptId (non-VAT payer)' },
+        },
+      },
+    );
+    ebarimtLogger.info({ transactionId: tx._id, lottery: e.lottery }, 'e-barimt non-VAT receipt marked returned');
+    return { returned: true };
   }
 
   const merchant =
