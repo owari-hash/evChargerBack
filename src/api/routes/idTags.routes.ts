@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { isValidObjectId } from 'mongoose';
-import { chargePointRefs, optionalChargePointRef } from '../../lib/chargePointRef';
+import { allowListRefs, optionalChargePointRef } from '../../lib/chargePointRef';
 import { z } from 'zod';
 import { badRequest, conflict, notFound } from '../../lib/errors';
 import { IdTag, LocalAuthListEntry } from '../../models/IdTag';
@@ -116,7 +116,7 @@ idTagsRouter.post(
       _id: idTag,
       ...rest,
       ...(allowedChargePointIds
-        ? { allowedChargePointIds: await chargePointRefs(allowedChargePointIds) }
+        ? { allowedChargePointIds: await allowListRefs(allowedChargePointIds) }
         : {}),
       ...(walletOwnerType ? { walletOwnerType, walletOwnerId } : {}),
     });
@@ -157,7 +157,7 @@ idTagsRouter.patch(
     const { allowedChargePointIds, walletOwnerType, walletOwnerId, ...rest } = body;
     const $set: Record<string, unknown> = { ...rest };
     const $unset: Record<string, ''> = {};
-    if (allowedChargePointIds) $set.allowedChargePointIds = await chargePointRefs(allowedChargePointIds);
+    if (allowedChargePointIds) $set.allowedChargePointIds = await allowListRefs(allowedChargePointIds);
     // Detaching from an organisation (unticking it in the admin UI) sends
     // `null` for both — the only way to clear a CLIENT wallet link back to
     // "this card pays for itself" rather than leaving the old client set.
@@ -235,7 +235,7 @@ idTagsRouter.post(
         rest: {
           ...rest,
           ...(allowedChargePointIds
-            ? { allowedChargePointIds: await chargePointRefs(allowedChargePointIds) }
+            ? { allowedChargePointIds: await allowListRefs(allowedChargePointIds) }
             : {}),
         },
       })),

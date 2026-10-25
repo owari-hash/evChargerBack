@@ -1,6 +1,6 @@
 import type { RequestHandler } from 'express';
 import { Types } from 'mongoose';
-import { notFound } from './errors';
+import { badRequest, notFound } from './errors';
 import { ChargePoint, type ChargePointDoc } from '../models/ChargePoint';
 
 /**
@@ -121,6 +121,29 @@ export async function optionalChargePointRef(
 ): Promise<Types.ObjectId | undefined> {
   if (!idOrCpId) return undefined;
   return requireChargePointRef(idOrCpId);
+}
+
+/**
+ * Resolves a card's allowed-stations list as an admin form sends it back.
+ *
+ * The form echoes the stored list, which holds ObjectIds — and a station
+ * deleted since (the simulator clean-up, say) leaves its id behind. That id
+ * is dropped rather than failing the whole save: the station is gone, so the
+ * card cannot charge there anyway. A station *name* typed in that does not
+ * exist is still refused, with the name in the message, since that is a typo
+ * the admin can fix.
+ */
+export async function allowListRefs(idsOrCpIds: string[]): Promise<Types.ObjectId[]> {
+  const refs: Types.ObjectId[] = [];
+  for (const value of idsOrCpIds) {
+    const cp = await findChargePoint(value);
+    if (cp) {
+      if (!refs.some((r) => r.equals(cp._id))) refs.push(cp._id);
+    } else if (!looksLikeObjectId(value)) {
+      throw badRequest(`«${value}» нэртэй станц олдсонгүй. Зөвшөөрөгдсөн станцуудын жагсаалтаа шалгана уу.`);
+    }
+  }
+  return refs;
 }
 
 /** Resolves a list of identifiers, rejecting any that does not exist. */
