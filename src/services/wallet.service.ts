@@ -14,7 +14,8 @@ import {
   type WalletOwnerType,
 } from '../models/Wallet';
 import { bus } from '../realtime/events';
-import { store } from '../driver/store';
+import { store, DriverUser } from '../driver/store';
+import { sendSms, templates } from '../driver/notify';
 
 /**
  * Prepaid wallet balances and their ledger.
@@ -99,6 +100,46 @@ export async function idTagsForWallet(owner: WalletOwner): Promise<string[]> {
     .select('_id')
     .lean();
   return tags.map((t) => String(t._id));
+}
+
+export async function resolvePhoneForWalletOwner(
+  owner: WalletOwner,
+  ref?: LedgerRef,
+): Promise<string | null> {
+  try {
+    // 1. If owner is USER (DriverUser in driver store)
+    if (owner.ownerType === 'USER' && owner.ownerId) {
+      const driver = await DriverUser.findById(owner.ownerId).select('phone').lean();
+      if (driver?.phone) return driver.phone;
+    }
+
+    // 2. If ref.idTag or owner is IDTAG
+    const tagId = ref?.idTag || (owner.ownerType === 'IDTAG' ? owner.ownerId : undefined);
+    if (tagId) {
+      const tag = await IdTag.findById(tagId).select('ownerPhone').lean();
+      if (tag?.ownerPhone) return tag.ownerPhone;
+
+      const driverByTag = await DriverUser.findOne({ idTag: tagId }).select('phone').lean();
+      if (driverByTag?.phone) return driverByTag.phone;
+    }
+
+    // 3. If ref has paymentId, check Payment
+    if (ref?.paymentId) {
+      const payment = await Payment.findById(ref.paymentId).select('userId idTag').lean();
+      if (payment?.userId) {
+        const driver = await DriverUser.findById(payment.userId).select('phone').lean();
+        if (driver?.phone) return driver.phone;
+      }
+      if (payment?.idTag) {
+        const tag = await IdTag.findById(payment.idTag).select('ownerPhone').lean();
+        if (tag?.ownerPhone) return tag.ownerPhone;
+      }
+    }
+  } catch (err) {
+    walletLogger.warn({ err, owner }, 'failed to resolve phone for wallet owner');
+  }
+
+  return null;
 }
 
 /**
@@ -245,6 +286,23 @@ export async function credit(
     { owner, type, amount: value, balance: wallet.balance, paymentId: ref.paymentId },
     'wallet credited',
   );
+
+  if (type === 'TOPUP') {
+    void (async () => {
+      try {
+        const phone = await resolvePhoneForWalletOwner(owner, ref);
+        if (phone) {
+          const balanceStr = (wallet.balance ?? 0).toLocaleString('mn-MN');
+          await sendSms({
+            to: phone,
+            text: templates.walletTopUpSms(balanceStr),
+          });
+        }
+      } catch (smsErr) {
+        walletLogger.warn({ err: smsErr, owner }, 'failed to send wallet top-up SMS');
+      }
+    })();
+  }
 
   return {
     wallet,

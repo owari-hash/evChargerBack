@@ -5,7 +5,7 @@ import { requireUser, setSessionCookie, toPublicUser } from '../auth/session';
 import { badRequest, conflict, guard, HOUR, notFound, parseBody, route } from '../http';
 import { DRIVER_GUIDES, store, type DriverGuide, type StoredUser } from '../store';
 import { changePinSchema, normalizePhone, updateProfileSchema } from '../validation';
-import { verifyEbarimtCustomerNo } from '../../services/ebarimt.service';
+import { verifyEbarimtCustomerNo, verifyTaxpayer } from '../../services/ebarimt.service';
 
 export const accountRoutes = Router();
 
@@ -116,6 +116,16 @@ accountRoutes.patch(
 /**
  * Pre-validation for E-Barimt customer code / TIN before saving.
  */
+accountRoutes.get(
+  '/ebarimt/check-org/:code',
+  route(async (req) => {
+    const code = req.params.code?.trim();
+    if (!code) throw badRequest('Байгууллагын регистрийн дугаараа оруулна уу');
+    const result = await verifyTaxpayer(code);
+    return { ok: true, result };
+  }),
+);
+
 accountRoutes.post(
   '/ebarimt/verify',
   route(async (req) => {

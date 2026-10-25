@@ -42,3 +42,11 @@ export function pinResetSms(code: string, minutes: number): string {
 export function phoneVerifySms(code: string, minutes: number): string {
   return `Batalgaajuulakh code ${code}. ${minutes} minutyn daraa khuchingui bolno.`;
 }
+
+export function walletTopUpSms(uldegdel: string): string {
+  return `Tany hetewch amjilttai tseneglegdlee. Tany uldegdel ${uldegdel}`;
+}
+
+export function sessionStopSms(kwh: string | number, uldegdel: string): string {
+  return `Ta ${kwh}kwt ashiglaj tany uldegdel ${uldegdel} bolloo`;
+}

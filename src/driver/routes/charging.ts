@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { verifyTaxpayer } from '../../services/ebarimt.service';
 import { z } from 'zod';
 import { env } from '../../config/env';
 import { getCurrentUser, requireUser } from '../auth/session';
@@ -200,6 +201,17 @@ stationRoutes.post(
 // ---------------------------------------------------------------------------
 
 export const sessionRoutes = Router();
+
+sessionRoutes.get(
+  '/ebarimt/check-org/:code',
+  route(async (req) => {
+    const code = req.params.code?.trim();
+    if (!code) throw badRequest('Байгууллагын регистрийн дугаараа оруулна уу');
+    const result = await verifyTaxpayer(code);
+    return { ok: true, result };
+  }),
+);
+
 
 const sessionsQuery = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),

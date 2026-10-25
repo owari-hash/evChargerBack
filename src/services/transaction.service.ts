@@ -7,10 +7,10 @@ import { Reservation } from '../models/Reservation';
 import { Transaction, type TransactionDoc } from '../models/Transaction';
 import type { StopReason } from '../models/enums';
 import type { IdTagInfo, MeterValueEntry } from '../ocpp/schemas/common';
-import { store } from '../driver/store';
+import { store, DriverUser } from '../driver/store';
 import { bus } from '../realtime/events';
 import { IdTag } from '../models/IdTag';
-import { sendSms } from '../driver/notify';
+import { sendSms, templates } from '../driver/notify';
 import { authorizeIdTag, canStopTransaction } from './authorization.service';
 import { storeMeterValues } from './meter.service';
 import { applySessionCost, capCostToBalance, feePercentForStation } from './pricing.service';
@@ -272,23 +272,8 @@ export async function stopTransaction(
       });
     }
 
-    // Notify the driver via SMS if ownerPhone is registered
-    try {
-      const idTagDoc = await IdTag.findById(tx.idTag).select('ownerPhone').lean();
-      if (idTagDoc?.ownerPhone) {
-        const owner = await resolveWalletOwnerForIdTag(tx.idTag);
-        const balance = owner ? await balanceOf(owner) : 0;
-        const kwh = ((tx.energyWh ?? 0) / 1000).toFixed(2);
-        const costStr = (tx.cost ?? 0).toLocaleString('mn-MN');
-        const balanceStr = balance.toLocaleString('mn-MN');
-        void sendSms({
-          to: idTagDoc.ownerPhone,
-          text: `Tany tseneglelt duuslaa. Ashiglasan:(${kwh} kw). Uldegel: ${balanceStr}. Bayrlalaa!`,
-        }).catch((err) => logger.warn({ err, txId: tx._id }, 'failed to send stop SMS to driver'));
-      }
-    } catch (err) {
-      logger.warn({ err, txId: tx._id }, 'failed to prepare stop SMS notification');
-    }
+    // Notify the driver via SMS for session end
+    void sendSessionStopSms(tx);
   } else if (tx.status === 'Completed' && tx.closedByCsms) {
     await resettleClosedTransaction(tx._id, input);
   }
@@ -302,6 +287,41 @@ export async function stopTransaction(
     return { idTagInfo: { ...idTagInfo, status: 'Invalid' } };
   }
   return { idTagInfo };
+}
+
+async function sendSessionStopSms(tx: TransactionDoc): Promise<void> {
+  try {
+    const owner = await resolveWalletOwnerForIdTag(tx.idTag);
+    let phone: string | undefined | null;
+
+    // 1. Check IdTag ownerPhone
+    const idTagDoc = await IdTag.findById(tx.idTag).select('ownerPhone').lean();
+    if (idTagDoc?.ownerPhone) {
+      phone = idTagDoc.ownerPhone;
+    }
+
+    // 2. If not on IdTag, check DriverUser by owner or by idTag
+    if (!phone && owner?.ownerType === 'USER') {
+      const driver = await DriverUser.findById(owner.ownerId).select('phone').lean();
+      phone = driver?.phone;
+    }
+    if (!phone) {
+      const driverByTag = await DriverUser.findOne({ idTag: tx.idTag }).select('phone').lean();
+      phone = driverByTag?.phone;
+    }
+
+    if (phone) {
+      const balance = owner ? await balanceOf(owner) : 0;
+      const kwh = ((tx.energyWh ?? 0) / 1000).toFixed(2);
+      const balanceStr = balance.toLocaleString('mn-MN');
+      await sendSms({
+        to: phone,
+        text: templates.sessionStopSms(kwh, balanceStr),
+      });
+    }
+  } catch (err) {
+    logger.warn({ err, txId: tx._id }, 'failed to send stop SMS to driver');
+  }
 }
 
 /**
@@ -363,6 +383,8 @@ export async function closeFromLastMeter(
     issueEBarimtForTransaction(tx._id).catch((err: unknown) => {
       logger.warn({ err: (err as Error).message, txId: tx._id }, 'auto-issue e-barimt for csms-closed session failed');
     });
+
+    void sendSessionStopSms(tx);
   }
 }
 

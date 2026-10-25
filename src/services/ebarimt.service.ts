@@ -70,7 +70,7 @@ const BOGUS_EBARIMT_CODES = new Set([
  * Validates a taxpayer TIN or enterprise registration number against official
  * ebarimt.mn central tax database.
  */
-export async function verifyTaxpayer(tinOrRegNo: string): Promise<{ valid: boolean; name?: string; tin?: string; error?: string }> {
+export async function verifyTaxpayer(tinOrRegNo: string): Promise<{ valid: boolean; name?: string; tin?: string; vatPayer?: boolean; error?: string }> {
   const clean = tinOrRegNo.trim();
   if (!clean) return { valid: false, error: 'Татвар төлөгчийн дугаар хоосон байна' };
 
@@ -78,17 +78,19 @@ export async function verifyTaxpayer(tinOrRegNo: string): Promise<{ valid: boole
     // 1. Check as TIN
     const tinRes = await fetch(`https://api.ebarimt.mn/api/info/check/getInfo?tin=${encodeURIComponent(clean)}`, {
       signal: AbortSignal.timeout(4000),
+      headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' },
     });
     if (tinRes.ok) {
-      const data = (await tinRes.json().catch(() => null)) as { status?: number; data?: { found?: boolean; name?: string } };
-      if (data?.status === 200 && data.data?.found) {
-        return { valid: true, name: data.data.name, tin: clean };
+      const data = (await tinRes.json().catch(() => null)) as { status?: number; data?: { found?: boolean; name?: string; vatPayer?: boolean } };
+      if (data?.status === 200 && (data.data?.found || data.data?.name)) {
+        return { valid: true, name: data.data.name, tin: clean, vatPayer: data.data.vatPayer };
       }
     }
 
     // 2. Check as enterprise registration number (e.g. 7-digit RD)
     const regRes = await fetch(`https://api.ebarimt.mn/api/info/check/getTinInfo?regNo=${encodeURIComponent(clean)}`, {
       signal: AbortSignal.timeout(4000),
+      headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' },
     });
     if (regRes.ok) {
       const data = (await regRes.json().catch(() => null)) as { status?: number; data?: string | number };
@@ -96,9 +98,10 @@ export async function verifyTaxpayer(tinOrRegNo: string): Promise<{ valid: boole
         const resolvedTin = String(data.data);
         const nameRes = await fetch(`https://api.ebarimt.mn/api/info/check/getInfo?tin=${encodeURIComponent(resolvedTin)}`, {
           signal: AbortSignal.timeout(4000),
+          headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' },
         }).catch(() => null);
-        const nameData = nameRes && nameRes.ok ? ((await nameRes.json().catch(() => null)) as { data?: { name?: string } }) : null;
-        return { valid: true, name: nameData?.data?.name, tin: resolvedTin };
+        const nameData = nameRes && nameRes.ok ? ((await nameRes.json().catch(() => null)) as { data?: { name?: string; vatPayer?: boolean } }) : null;
+        return { valid: true, name: nameData?.data?.name, tin: resolvedTin, vatPayer: nameData?.data?.vatPayer };
       }
     }
 
