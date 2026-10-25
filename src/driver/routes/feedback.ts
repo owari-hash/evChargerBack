@@ -11,7 +11,7 @@ export const feedbackRoutes = Router();
 const DEFAULT_NOTIFY_PHONES = ['88887207', '95393408', '99246123'];
 
 const feedbackSchema = z.object({
-  message: z.string().trim().min(1, 'Санал хүсэлтээ бичнэ үү').max(2000),
+  message: z.string().trim().min(3, 'Санал хүсэлтээ бичнэ үү').max(2000),
   phone: z.string().trim().optional(),
   source: z.string().trim().optional().default('web'),
 });
@@ -36,14 +36,15 @@ feedbackRoutes.post(
     const feedbackDoc = await Feedback.create({
       phone: resolvedPhone,
       message,
-      source,
+      source: source || 'web',
       userId: user?.id,
-      status: 'NEW',
+      userName: user?.name,
+      status: 'new',
     });
 
     // Format SMS: "sanal huselt irlee." (no message content)
     const cleanPhone = resolvedPhone ? resolvedPhone.replace(/\D/g, '').slice(-8) : '';
-    const smsText = cleanPhone ? `sanal huselt irlee. Utas: ${cleanPhone}` : 'sanal huselt irlee.';
+    const smsText = cleanPhone ? `sanal huselt irlee. Utsas: ${cleanPhone}` : 'sanal huselt irlee.';
 
     // Target phones: defaults to 88887207, 95393408, 99246123
     const configured = (env.FEEDBACK_NOTIFY_PHONES || DEFAULT_NOTIFY_PHONES.join(','))
@@ -91,6 +92,7 @@ feedbackRoutes.post(
         delivered,
         total: targetPhones.length,
         fromPhone: resolvedPhone,
+        smsText,
       },
       'Feedback received and SMS dispatched to operators',
     );
