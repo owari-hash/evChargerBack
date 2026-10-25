@@ -3,8 +3,10 @@ import { env } from '../config/env';
 import { Client } from '../models/Client';
 
 /**
- * Session pricing. The driver pays the energy at the station's tariff plus
- * Eplug's service fee on top of it: 1,000₮ of energy at 5% costs 1,050₮.
+ * Session pricing. The user pays the energy at the station's tariff (cost).
+ * Eplug's service fee is inside the cost:
+ * e.g. User pays 1,000₮ total. At 20% fee, Eplug gets 200₮ (20%), merchant gets 800₮ (80%).
+ * energyCost + feeAmount === cost.
  *
  * A station's tariff can also vary by time of day (`TariffZone`); a session
  * that spans a zone boundary is billed as if it were several back-to-back
@@ -102,10 +104,10 @@ export async function feePercentForStation(station: {
   return resolveFeePercent(null, client);
 }
 
-/** What a driver pays per kWh at a station, fee included. */
-export function driverTariff(tariffPerKwh: number | null | undefined, feePercent: number): number | undefined {
+/** What a driver pays per kWh at a station. With fee inside, tariffPerKwh is the total rate paid. */
+export function driverTariff(tariffPerKwh: number | null | undefined, _feePercent?: number): number | undefined {
   if (typeof tariffPerKwh !== 'number') return undefined;
-  return money(tariffPerKwh * (1 + feePercent / 100));
+  return money(tariffPerKwh);
 }
 
 export interface SessionCost {
@@ -125,9 +127,10 @@ export function sessionCost(
   feePercent: number | null | undefined,
 ): SessionCost | null {
   if (!tariffPerKwh) return null;
-  const energyCost = Math.round((energyWh / 1000) * tariffPerKwh);
-  const feeAmount = Math.round((energyCost * (feePercent ?? 0)) / 100);
-  return { energyCost, feeAmount, cost: energyCost + feeAmount };
+  const cost = Math.round((energyWh / 1000) * tariffPerKwh);
+  const feeAmount = Math.round((cost * (feePercent ?? 0)) / 100);
+  const energyCost = cost - feeAmount;
+  return { energyCost, feeAmount, cost };
 }
 
 /**
@@ -187,9 +190,10 @@ export function sessionCostTimeWeighted(
   const effectiveTariff = weightedRateMs / totalMs;
   if (!effectiveTariff) return null;
 
-  const energyCost = Math.round((energyWh / 1000) * effectiveTariff);
-  const feeAmount = Math.round((energyCost * (feePercent ?? 0)) / 100);
-  return { energyCost, feeAmount, cost: energyCost + feeAmount, tariffPerKwh: money(effectiveTariff) };
+  const cost = Math.round((energyWh / 1000) * effectiveTariff);
+  const feeAmount = Math.round((cost * (feePercent ?? 0)) / 100);
+  const energyCost = cost - feeAmount;
+  return { energyCost, feeAmount, cost, tariffPerKwh: money(effectiveTariff) };
 }
 
 /** Write energyCost / feeAmount / cost onto a transaction from its energy —
@@ -251,8 +255,8 @@ export function capCostToBalance(
     tx.cost = cap;
     const fee = tx.feePercent ?? 0;
     if (fee > 0) {
-      tx.energyCost = Math.round((cap * 100) / (100 + fee));
-      tx.feeAmount = cap - tx.energyCost;
+      tx.feeAmount = Math.round((cap * fee) / 100);
+      tx.energyCost = cap - tx.feeAmount;
     } else {
       tx.energyCost = cap;
       tx.feeAmount = 0;

@@ -165,7 +165,7 @@ export async function storeMeterValues(
 
             // Dynamic buffer: estimated 15 seconds of charging output, minimum 200 MNT
             const pW = tx.lastPowerW ?? 15000;
-            const ratePerWh = ((tx.tariffPerKwh ?? 500) * (1 + (tx.feePercent ?? 0) / 100)) / 1000;
+            const ratePerWh = (tx.tariffPerKwh ?? 500) / 1000;
             const bufferMnt = Math.max(200, Math.round(((pW * 15) / 3600) * ratePerWh));
 
             // If cost has reached or is about to exceed available balance

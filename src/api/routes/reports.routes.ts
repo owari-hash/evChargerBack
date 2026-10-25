@@ -260,11 +260,11 @@ reportsRouter.get(
         clientNet: net,
         formula: {
           kwhFormula: `${wh} Вт.ц ÷ 1,000 = ${kwh} кВт.ц`,
-          energyCostFormula: `${kwh} кВт.ц × тариф = ${energyCost}₮`,
-          feeFormula: `${energyCost}₮ × ${feePct}% = ${fee}₮`,
-          grossFormula: `${energyCost}₮ (цэнэглэлт) + ${fee}₮ (шимтгэл) = ${gross}₮`,
-          netFormula: `${gross}₮ (борлуулалт) - ${fee}₮ (шимтгэл) = ${net}₮`,
-          summaryDisplay: `Борлуулалт (${gross.toLocaleString()}₮) - Шимтгэл (${fee.toLocaleString()}₮) = Цэвэр орлого (${net.toLocaleString()}₮)`,
+          grossFormula: `${kwh} кВт.ц × ${s.tariffPerKwh ?? 0}₮ = ${gross}₮ (хэрэглэгч төлсөн)`,
+          feeFormula: `${gross}₮ × ${feePct}% = ${fee}₮ (Eplug шимтгэл)`,
+          energyCostFormula: `${gross}₮ - ${fee}₮ = ${energyCost}₮ (харилцагчийн орлого)`,
+          netFormula: `${gross}₮ - ${fee}₮ = ${net}₮`,
+          summaryDisplay: `Хэрэглэгч төлсөн (${gross.toLocaleString()}₮): Харилцагч (${net.toLocaleString()}₮) + Eplug шимтгэл (${fee.toLocaleString()}₮)`,
         },
       };
     });
@@ -361,10 +361,10 @@ reportsRouter.get(
       },
       formulasGuide: {
         energy: 'Эрчим хүч (кВт.ц) = Тоолуурын заалт (Вт.ц) ÷ 1,000',
-        energyCost: 'Цэнэглэлтийн өртөг (₮) = Цэнэглэсэн кВт.ц × Тариф (₮/кВт.ц)',
-        fee: 'Eplug үйлчилгээний шимтгэл (₮) = Цэнэглэлтийн өртөг × Шимтгэлийн хувь (%)',
-        gross: 'Борлуулалтын нийт дүн (₮) = Цэнэглэлтийн өртөг + Шимтгэл',
-        clientNet: 'Харилцагчийн олгох цэвэр орлого (₮) = Борлуулалтын нийт дүн - Шимтгэл',
+        gross: 'Борлуулалтын нийт дүн (₮) = Цэнэглэсэн кВт.ц × Тариф (хэрэглэгчийн төлөх дүн)',
+        fee: 'Eplug үйлчилгээний шимтгэл (₮) = Нийт борлуулалт × Шимтгэлийн хувь (%)',
+        energyCost: 'Харилцагчийн орлого (₮) = Нийт борлуулалт - Eplug шимтгэл',
+        clientNet: 'Харилцагчид олгох цэвэр орлого (₮) = Нийт борлуулалт - Шимтгэл',
         outstanding: 'Шилжүүлэх үлдэгдэл тооцоо (₮) = Харилцагчийн нийт цэвэр орлого - Шилжүүлсэн төлөлт',
       },
       stations,

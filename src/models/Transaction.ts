@@ -56,11 +56,11 @@ const transactionSchema = new Schema(
         },
       ],
     },
-    /** Total the driver pays: energyCost + feeAmount. */
+    /** Total the driver pays: kWh × tariffPerKwh (cost = energyCost + feeAmount). */
     cost: { type: Number },
-    /** kWh × tariffPerKwh. */
+    /** Merchant / Client share: cost - feeAmount. */
     energyCost: { type: Number },
-    /** Eplug's service fee, energyCost × feePercent / 100. */
+    /** Eplug's service fee: cost × feePercent / 100. */
     feeAmount: { type: Number },
     /** Fee and owning client as they were when the session started. */
     feePercent: { type: Number },
