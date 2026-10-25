@@ -26,6 +26,13 @@ async function main() {
   const topUpResult = await sendSms({ to: phone, text: topUpText });
   console.log(`    Result:`, topUpResult);
 
+  // 3. Test Refund SMS
+  const refundText = templates.refundSms('8,650', '5025753481', '4100');
+  console.log(`\n[3] Testing Refund SMS:`);
+  console.log(`    Content: "${refundText}"`);
+  const refundResult = await sendSms({ to: phone, text: refundText });
+  console.log(`    Result:`, refundResult);
+
   console.log(`\nDone!\n`);
 }
 

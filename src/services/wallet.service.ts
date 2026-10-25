@@ -192,6 +192,7 @@ export interface LedgerRef {
   chargePointId?: Types.ObjectId;
   connectorId?: number;
   idTag?: string;
+  accountNumber?: string;
   createdBy?: string;
 }
 
@@ -301,6 +302,29 @@ export async function credit(
         }
       } catch (smsErr) {
         walletLogger.warn({ err: smsErr, owner }, 'failed to send wallet top-up SMS');
+      }
+    })();
+  }
+
+  if (type === 'REFUND') {
+    void (async () => {
+      try {
+        const phone = await resolvePhoneForWalletOwner(owner, ref);
+        if (phone) {
+          let account = ref.accountNumber;
+          if (!account && ref.description) {
+            const match = ref.description.match(/\b\d{8,12}\b/);
+            if (match) account = match[0];
+          }
+          const amountStr = value.toLocaleString('mn-MN');
+          const balanceStr = (wallet.balance ?? 0).toLocaleString('mn-MN');
+          await sendSms({
+            to: phone,
+            text: templates.refundSms(amountStr, account, balanceStr),
+          });
+        }
+      } catch (smsErr) {
+        walletLogger.warn({ err: smsErr, owner }, 'failed to send refund SMS');
       }
     })();
   }

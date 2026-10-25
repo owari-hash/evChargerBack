@@ -16,7 +16,7 @@ import { credit, netChargeForTransaction } from './wallet.service';
  */
 export async function refundTransaction(
   transactionId: number,
-  opts: { reason: string; refundedBy: string },
+  opts: { reason: string; refundedBy: string; accountNumber?: string },
 ): Promise<TransactionDoc> {
   const tx = await Transaction.findById(transactionId);
   if (!tx) throw notFound('Transaction not found');
@@ -42,12 +42,13 @@ export async function refundTransaction(
     const { returned } = await returnEBarimtForTransaction(claimed);
 
     const movement = await credit(owner, charged, 'REFUND', {
-      description: `Буцаалт · Цэнэглэлт #${transactionId}`,
+      description: `Буцаалт · Цэнэглэлт #${transactionId}${opts.accountNumber ? ` · Данс: ${opts.accountNumber}` : ''}${opts.reason ? ` · ${opts.reason}` : ''}`,
       idempotencyKey: `refund:transaction:${transactionId}`,
       transactionId,
       chargePointId: claimed.chargePointId,
       connectorId: claimed.connectorId,
       idTag: claimed.idTag,
+      accountNumber: opts.accountNumber,
       createdBy: opts.refundedBy,
     });
 
@@ -60,6 +61,7 @@ export async function refundTransaction(
             state: 'DONE',
             amount: charged,
             reason: opts.reason,
+            accountNumber: opts.accountNumber,
             refundedBy: opts.refundedBy,
             refundedAt: new Date(),
             walletEntryId: movement.entryId ?? undefined,

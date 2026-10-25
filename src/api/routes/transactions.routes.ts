@@ -272,6 +272,7 @@ transactionsRouter.post(
  */
 const refundSchema = z.object({
   reason: z.string().trim().min(1, 'Буцаалтын шалтгаан оруулна уу').max(255),
+  accountNumber: z.string().trim().max(50).optional(),
 });
 
 transactionsRouter.post(
@@ -282,6 +283,7 @@ transactionsRouter.post(
     const body = req.body as z.infer<typeof refundSchema>;
     const tx = await refundTransaction(Number(req.params.id), {
       reason: body.reason,
+      accountNumber: body.accountNumber,
       refundedBy: req.user?.email ?? 'admin',
     });
     res.json(tx.toJSON());
