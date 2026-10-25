@@ -15,6 +15,7 @@ const userSchema = new Schema(
     // first-run guide. Set only when an account is created, so operators from
     // before the guide existed never see it.
     guidePending: { type: Boolean },
+    allowedMenus: { type: [String], default: undefined },
   },
   {
     timestamps: true,

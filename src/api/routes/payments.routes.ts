@@ -1,10 +1,13 @@
 import { Router } from 'express';
+import { Types } from 'mongoose';
 import { optionalChargePointRef, requireChargePointRef } from '../../lib/chargePointRef';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { env } from '../../config/env';
 import { notFound } from '../../lib/errors';
 import { PAYMENT_PROVIDERS, PAYMENT_PURPOSES, PAYMENT_STATUSES, Payment } from '../../models/Payment';
+import { ChargePoint } from '../../models/ChargePoint';
+import { Transaction } from '../../models/Transaction';
 import { store } from '../../driver/store';
 import { normalizePhone } from '../../driver/validation';
 import {
@@ -171,6 +174,19 @@ paymentsRouter.get(
   asyncHandler(async (req, res) => {
     const q = req.query as unknown as z.infer<typeof listQuery>;
     const filter: Record<string, unknown> = {};
+
+    if ((req.user?.role === 'CLIENT' || req.user?.clientId) && req.user.clientId) {
+      const clientOid = new Types.ObjectId(req.user.clientId);
+      const clientStations = await ChargePoint.find({
+        $or: [{ clientId: clientOid }, { linkedClientIds: clientOid }],
+      }).select('_id').lean();
+      const stationIds = clientStations.map((s) => s._id);
+      const clientTxIds = await Transaction.distinct('_id', { clientId: clientOid });
+      filter.$or = [
+        { chargePointId: { $in: stationIds } },
+        { transactionId: { $in: clientTxIds } },
+      ];
+    }
     if (q.status) filter.status = q.status;
     if (q.provider) filter.provider = q.provider;
     if (q.purpose) filter.purpose = q.purpose;

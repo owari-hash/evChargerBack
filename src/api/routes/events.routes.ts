@@ -1,7 +1,9 @@
 import { Router } from 'express';
 import jwt from 'jsonwebtoken';
+import { Types } from 'mongoose';
 import { env } from '../../config/env';
 import { findChargePoint } from '../../lib/chargePointRef';
+import { ChargePoint } from '../../models/ChargePoint';
 import { bus, type CsmsEvent } from '../../realtime/events';
 import { asyncHandler } from '../middleware';
 import type { AuthPrincipal } from '../middleware/auth';
@@ -56,6 +58,15 @@ eventsRouter.get(
       cpId = cp.cpId;
     }
 
+    let allowedCpIds: Set<string> | undefined;
+    if ((principal.role === 'CLIENT' || principal.clientId) && principal.clientId) {
+      const clientOid = new Types.ObjectId(principal.clientId);
+      const stations = await ChargePoint.find({
+        $or: [{ clientId: clientOid }, { linkedClientIds: clientOid }],
+      }).select('cpId').lean();
+      allowedCpIds = new Set(stations.map((s) => s.cpId));
+    }
+
     const wanted = (req.query.events as string | undefined)
       ?.split(',')
       .map((s) => s.trim())
@@ -72,9 +83,10 @@ eventsRouter.get(
 
     const send = (e: CsmsEvent) => {
       if (cpId && e.chargePointId !== cpId) return;
-    if (wanted && wanted.length > 0 && !wanted.includes(e.event)) return;
-    res.write(`event: ${e.event}\ndata: ${JSON.stringify(e)}\n\n`);
-  };
+      if (allowedCpIds && (!e.chargePointId || !allowedCpIds.has(e.chargePointId))) return;
+      if (wanted && wanted.length > 0 && !wanted.includes(e.event)) return;
+      res.write(`event: ${e.event}\ndata: ${JSON.stringify(e)}\n\n`);
+    };
 
   const off = bus.onAny(send);
   const keepAlive = setInterval(() => res.write(': ping\n\n'), 25_000);

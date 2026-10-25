@@ -27,8 +27,7 @@ reportsRouter.get(
     const q = req.query as unknown as z.infer<typeof reportQuerySchema>;
 
     let targetClientId: string | undefined = q.clientId;
-    if (req.user?.role === 'CLIENT') {
-      if (!req.user.clientId) throw forbidden('Client ID not found in session');
+    if ((req.user?.role === 'CLIENT' || req.user?.clientId) && req.user.clientId) {
       targetClientId = req.user.clientId;
     }
 

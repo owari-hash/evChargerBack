@@ -10,6 +10,7 @@ export interface AuthPrincipal {
   role: UserRole;
   clientId?: string;
   clientName?: string;
+  allowedMenus?: string[];
 }
 
 declare module 'express-serve-static-core' {
@@ -47,6 +48,7 @@ export function requireAuth(req: Request, _res: Response, next: NextFunction): v
       role: decoded.role,
       clientId: decoded.clientId,
       clientName: decoded.clientName,
+      allowedMenus: decoded.allowedMenus,
     };
     next();
   } catch {

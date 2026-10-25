@@ -51,7 +51,7 @@ chargePointsRouter.get(
       ];
     }
     if (q.online) filter.isOnline = q.online === 'true';
-    if (req.user?.role === 'CLIENT') {
+    if ((req.user?.role === 'CLIENT' || req.user?.clientId) && req.user.clientId) {
       const cId = new Types.ObjectId(req.user.clientId);
       filter.$or = [{ clientId: cId }, { linkedClientIds: cId }];
     } else if (q.clientId) {
@@ -229,7 +229,7 @@ chargePointsRouter.get(
     // Callers may hold either identifier, so both resolve.
     const cp = (await requireChargePoint(req.params.id!)).toJSON();
 
-    if (req.user?.role === 'CLIENT') {
+    if ((req.user?.role === 'CLIENT' || req.user?.clientId) && req.user.clientId) {
       const isOwner = String(cp.clientId ?? '') === String(req.user?.clientId);
       const isLinked = (cp.linkedClientIds ?? []).some((id: unknown) => String(id) === String(req.user?.clientId));
       if (!isOwner && !isLinked) {

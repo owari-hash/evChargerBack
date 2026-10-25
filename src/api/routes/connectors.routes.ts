@@ -44,7 +44,7 @@ connectorAdminRouter.get(
     const { id } = req.params;
     if (!isValidObjectId(id)) throw badRequest('Invalid charge point id');
 
-    if (req.user?.role === 'CLIENT') {
+    if ((req.user?.role === 'CLIENT' || req.user?.clientId) && req.user.clientId) {
       const cp = await ChargePoint.findById(id).select('clientId linkedClientIds').lean();
       if (!cp) throw notFound('Charge point not found');
       const isOwner = String(cp.clientId ?? '') === String(req.user?.clientId);

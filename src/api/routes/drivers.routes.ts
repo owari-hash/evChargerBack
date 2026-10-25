@@ -41,6 +41,16 @@ driversRouter.get(
     const q = req.query as unknown as z.infer<typeof listDriversQuery>;
     const filter: Record<string, unknown> = {};
 
+    if ((req.user?.role === 'CLIENT' || req.user?.clientId) && req.user.clientId) {
+      const clientOid = new Types.ObjectId(req.user.clientId);
+      const [clientTags, txIdTags] = await Promise.all([
+        IdTag.find({ walletOwnerType: 'CLIENT', walletOwnerId: String(clientOid) }).select('_id').lean(),
+        Transaction.distinct('idTag', { clientId: clientOid }),
+      ]);
+      const allowedTags = [...new Set([...clientTags.map((t) => String(t._id)), ...txIdTags].filter(Boolean))];
+      filter.idTag = { $in: allowedTags };
+    }
+
     if (q.status === 'active') filter.isActive = true;
     else if (q.status === 'blocked') filter.isActive = false;
 
@@ -173,7 +183,11 @@ driversRouter.get(
     const tagIds = Array.from(new Set([...rfidCards.map((c) => c._id), ...(driver.idTag ? [driver.idTag] : [])]));
 
     // Fetch driver's recent charging sessions
-    const recentSessions = await Transaction.find({ idTag: { $in: tagIds } })
+    const txMatch: Record<string, unknown> = { idTag: { $in: tagIds } };
+    if ((req.user?.role === 'CLIENT' || req.user?.clientId) && req.user.clientId) {
+      txMatch.clientId = new Types.ObjectId(req.user.clientId);
+    }
+    const recentSessions = await Transaction.find(txMatch)
       .populate('chargePointId', 'name cpId address')
       .sort({ startTimestamp: -1 })
       .limit(30)
@@ -181,7 +195,7 @@ driversRouter.get(
 
     // Calculate all-time totals
     const agg = await Transaction.aggregate([
-      { $match: { idTag: { $in: tagIds } } },
+      { $match: txMatch },
       {
         $group: {
           _id: null,

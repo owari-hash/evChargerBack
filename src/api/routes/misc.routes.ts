@@ -39,7 +39,15 @@ reservationsRouter.get(
   asyncHandler(async (req, res) => {
     const q = req.query as unknown as z.infer<typeof reservationQuery>;
     const filter: Record<string, unknown> = {};
-    if (q.chargePointId) filter.chargePointId = await requireChargePointRef(q.chargePointId);
+    if ((req.user?.role === 'CLIENT' || req.user?.clientId) && req.user.clientId) {
+      const clientOid = new Types.ObjectId(req.user.clientId);
+      const clientStations = await ChargePoint.find({
+        $or: [{ clientId: clientOid }, { linkedClientIds: clientOid }],
+      }).select('_id').lean();
+      filter.chargePointId = { $in: clientStations.map((s) => s._id) };
+    } else if (q.chargePointId) {
+      filter.chargePointId = await requireChargePointRef(q.chargePointId);
+    }
     if (q.state) filter.state = q.state;
 
     const { skip, limit } = paginate(q);
@@ -175,7 +183,7 @@ statsRouter.get(
   '/overview',
   asyncHandler(async (req, res) => {
     const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const isClient = req.user?.role === 'CLIENT' && req.user.clientId;
+    const isClient = (req.user?.role === 'CLIENT' || Boolean(req.user?.clientId)) && req.user?.clientId;
     const clientOid = isClient ? new Types.ObjectId(req.user!.clientId) : null;
 
     let stationIds: Types.ObjectId[] | null = null;
@@ -270,7 +278,7 @@ statsRouter.get(
       status: 'Completed',
       stopTimestamp: { $gte: since },
     };
-    if (req.user?.role === 'CLIENT' && req.user.clientId) {
+    if ((req.user?.role === 'CLIENT' || req.user?.clientId) && req.user.clientId) {
       match.clientId = new Types.ObjectId(req.user.clientId);
     }
     if (q.chargePointId) match.chargePointId = await requireChargePointRef(q.chargePointId);
@@ -310,7 +318,7 @@ statsRouter.get(
       status: 'Completed',
       stopTimestamp: { $gte: since },
     };
-    if (req.user?.role === 'CLIENT' && req.user.clientId) {
+    if ((req.user?.role === 'CLIENT' || req.user?.clientId) && req.user.clientId) {
       topMatch.clientId = new Types.ObjectId(req.user.clientId);
     }
     const data = await Transaction.aggregate([
@@ -368,7 +376,7 @@ connectorsRouter.get(
     };
     const filter: Record<string, unknown> = {};
 
-    if (req.user?.role === 'CLIENT' && req.user.clientId) {
+    if ((req.user?.role === 'CLIENT' || req.user?.clientId) && req.user.clientId) {
       const clientOid = new Types.ObjectId(req.user.clientId);
       const clientStations = await ChargePoint.find({
         $or: [{ clientId: clientOid }, { linkedClientIds: clientOid }],

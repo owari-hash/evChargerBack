@@ -946,6 +946,7 @@ export interface EbarimtListParams {
   from?: Date;
   to?: Date;
   chargePointId?: string;
+  clientId?: string;
 }
 
 export interface EbarimtReceiptRow {
@@ -1023,6 +1024,20 @@ export async function listEbarimtReceipts(params: EbarimtListParams): Promise<Eb
   if (params.chargePointId) {
     txFilter.chargePointId = params.chargePointId;
     payFilter.chargePointId = params.chargePointId;
+  }
+  if (params.clientId) {
+    const clientStations = await ChargePoint.find({
+      $or: [{ clientId: params.clientId }, { linkedClientIds: params.clientId }],
+    }).select('_id cpId').lean();
+    const stationOids = clientStations.map((s) => s._id);
+    const stationCpIds = clientStations.map((s) => s.cpId).filter(Boolean);
+    const allStationIds = [...stationOids.map(String), ...stationCpIds];
+
+    txFilter.$or = [
+      { clientId: params.clientId },
+      { chargePointId: { $in: allStationIds } },
+    ];
+    payFilter.chargePointId = { $in: allStationIds };
   }
 
   if (params.q) {

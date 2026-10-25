@@ -38,7 +38,11 @@ ebarimtRouter.get(
   validate(listQuery, 'query'),
   asyncHandler(async (req, res) => {
     const q = req.query as unknown as z.infer<typeof listQuery>;
-    const result = await listEbarimtReceipts(q);
+    const clientId =
+      (req.user?.role === 'CLIENT' || req.user?.clientId) && req.user.clientId
+        ? req.user.clientId
+        : undefined;
+    const result = await listEbarimtReceipts({ ...q, clientId });
     res.json(result);
   }),
 );

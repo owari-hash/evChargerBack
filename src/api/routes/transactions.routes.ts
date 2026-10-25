@@ -58,7 +58,7 @@ transactionsRouter.get(
   asyncHandler(async (req, res) => {
     const q = req.query as unknown as z.infer<typeof listQuery>;
     const filter: Record<string, unknown> = {};
-    if (req.user?.role === 'CLIENT') {
+    if ((req.user?.role === 'CLIENT' || req.user?.clientId) && req.user.clientId) {
       filter.clientId = new Types.ObjectId(req.user.clientId);
     }
     if (q.chargePointId) filter.chargePointId = await requireChargePointRef(q.chargePointId);
@@ -121,7 +121,7 @@ transactionsRouter.get(
   '/active',
   asyncHandler(async (req, res) => {
     const filter: Record<string, unknown> = { status: 'Active' };
-    if (req.user?.role === 'CLIENT') {
+    if ((req.user?.role === 'CLIENT' || req.user?.clientId) && req.user.clientId) {
       filter.clientId = new Types.ObjectId(req.user.clientId);
     }
     const data = await Transaction.find(filter).sort({ startTimestamp: -1 }).lean();
@@ -155,7 +155,7 @@ transactionsRouter.get(
   asyncHandler(async (req, res) => {
     const tx = await Transaction.findById(Number(req.params.id)).lean();
     if (!tx) throw notFound('Transaction not found');
-    if (req.user?.role === 'CLIENT' && String(tx.clientId ?? '') !== String(req.user.clientId)) {
+    if ((req.user?.role === 'CLIENT' || req.user?.clientId) && req.user.clientId && String(tx.clientId ?? '') !== String(req.user.clientId)) {
       throw forbidden('Access denied');
     }
     const [driver, cp] = await Promise.all([

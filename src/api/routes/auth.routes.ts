@@ -51,6 +51,7 @@ authRouter.post(
       role: user.role,
       clientId: user.clientId ? String(user.clientId) : undefined,
       clientName,
+      allowedMenus: user.allowedMenus && user.allowedMenus.length > 0 ? user.allowedMenus : undefined,
     };
     res.json({ token: signToken(principal), user: principal });
   }),
@@ -97,6 +98,7 @@ const createUserSchema = z.object({
   name: z.string().optional(),
   role: z.enum(USER_ROLES).default('VIEWER'),
   clientId: z.string().optional().nullable(),
+  allowedMenus: z.array(z.string()).optional().nullable(),
 });
 
 authRouter.post(
@@ -115,6 +117,7 @@ authRouter.post(
       name: body.name,
       role: body.role,
       clientId: body.clientId || undefined,
+      allowedMenus: body.allowedMenus && body.allowedMenus.length > 0 ? body.allowedMenus : undefined,
       guidePending: true,
     });
     res.status(201).json(user.toJSON());
@@ -126,7 +129,7 @@ authRouter.get(
   requireAuth,
   requireAdmin,
   asyncHandler(async (_req, res) => {
-    res.json(await User.find().populate('clientId', 'name').sort({ createdAt: -1 }));
+    res.json(await User.find().populate('clientId', 'name businessRegister').sort({ createdAt: -1 }));
   }),
 );
 
@@ -134,6 +137,7 @@ const updateUserSchema = z.object({
   name: z.string().optional(),
   role: z.enum(USER_ROLES).optional(),
   clientId: z.string().optional().nullable(),
+  allowedMenus: z.array(z.string()).optional().nullable(),
   isActive: z.boolean().optional(),
   password: z.string().min(6).optional(),
 });
@@ -149,10 +153,13 @@ authRouter.patch(
     if (body.name !== undefined) update.name = body.name;
     if (body.role !== undefined) update.role = body.role;
     if (body.clientId !== undefined) update.clientId = body.clientId || null;
+    if (body.allowedMenus !== undefined) {
+      update.allowedMenus = body.allowedMenus && body.allowedMenus.length > 0 ? body.allowedMenus : [];
+    }
     if (body.isActive !== undefined) update.isActive = body.isActive;
     if (body.password) update.passwordHash = await hashPassword(body.password);
 
-    const user = await User.findByIdAndUpdate(req.params.id, update, { new: true });
+    const user = await User.findByIdAndUpdate(req.params.id, update, { new: true }).populate('clientId', 'name businessRegister');
     if (!user) throw notFound('User not found');
     res.json(user.toJSON());
   }),
