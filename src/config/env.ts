@@ -266,6 +266,7 @@ const schema = z.object({
   MESSAGEPRO_SMS_KEY: opt,
   CALLPRO_SMS_KEY: opt,
   CALLPRO_SMS_URL: text('https://api-text.callpro.mn/v1/sms/send'),
+  FEEDBACK_NOTIFY_PHONES: text('88887207,95393408,99246123'),
 
   TLS_ENABLED: bool(false),
   TLS_KEY_PATH: z.string().default('./certs/server.key'),

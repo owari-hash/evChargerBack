@@ -7,6 +7,7 @@ import { assistantRouter } from './routes/assistant';
 import { authRoutes } from './routes/auth';
 import { sessionRoutes, stationRoutes, walletRoutes } from './routes/charging';
 import { driverNotificationsRoutes } from './routes/notifications';
+import { feedbackRoutes } from './routes/feedback';
 import { paymentRoutes } from './routes/payments';
 import { recordAccess } from '../services/analytics.service';
 
@@ -73,6 +74,7 @@ export function createDriverRouter(): Router {
   router.use('/assistant', assistantRouter);
   router.use('/notifications', driverNotificationsRoutes);
   router.use('/payments', paymentRoutes);
+  router.use('/feedback', feedbackRoutes);
 
   router.use((_req, res) => {
     res.status(404).json({ error: 'Хүсэлт олдсонгүй' });

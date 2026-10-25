@@ -24,4 +24,6 @@ export * from './VehicleDetection';
 export * from './AdminNotification';
 export * from './DriverNotification';
 export * from './AccessLog';
+export * from './ContactInfo';
+export * from './Feedback';
 export { Counter, nextSequence, ensureSequenceAtLeast } from '../lib/counters';

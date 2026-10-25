@@ -7,8 +7,10 @@ import { AppRelease, APP_PLATFORMS } from '../../models/AppRelease';
 import { ChargePoint } from '../../models/ChargePoint';
 import { Connector } from '../../models/Connector';
 import { guard, HOUR, notFound, parseQuery, route } from '../http';
+import { feedbackRoutes } from './feedback';
 
 export const appRoutes = Router();
+appRoutes.use('/feedback', feedbackRoutes);
 
 /**
  * GET /app-api/app/announcements
@@ -138,3 +140,18 @@ appRoutes.get(
     };
   }),
 );
+
+/**
+ * GET /app-api/app/contact
+ *
+ * Contact and social information for website and kiosk footer.
+ */
+appRoutes.get(
+  '/contact',
+  route(async () => {
+    const { getOrCreateContactInfo } = await import('../../models/ContactInfo');
+    const info = await getOrCreateContactInfo();
+    return info.toJSON();
+  }),
+);
+

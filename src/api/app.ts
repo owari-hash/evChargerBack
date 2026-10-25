@@ -40,6 +40,8 @@ import { vehicleDetectionsRouter } from './routes/vehicleDetections.routes';
 import { adminNotificationsRouter } from './routes/notifications.routes';
 import { analyticsRouter } from './routes/analytics.routes';
 import { driversRouter } from './routes/drivers.routes';
+import { contactRouter } from './routes/contact.routes';
+import { feedbackAdminRouter } from './routes/feedback.routes';
 
 export function createApp(): Express {
   const app = express();
@@ -180,6 +182,8 @@ export function createApp(): Express {
   api.use('/vehicle-detections', vehicleDetectionsRouter);
   api.use('/notifications', adminNotificationsRouter);
   api.use('/analytics', analyticsRouter);
+  api.use('/contact', contactRouter);
+  api.use('/feedback', feedbackAdminRouter);
 
   app.use(base || '/', api);
 
