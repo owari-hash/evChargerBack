@@ -160,7 +160,7 @@ reportsRouter.get(
         ],
         recentSessions: [
           { $sort: { stopTimestamp: -1 } },
-          { $limit: 100 },
+          { $limit: 500 },
           {
             $project: {
               _id: 1,
@@ -244,6 +244,22 @@ reportsRouter.get(
       const energyCost = round2(s.energyCost ?? (gross - fee));
       const feePct = s.stationFeePercent ?? clientInfo?.feePercent ?? 0;
 
+      const stationSessions = (aggregateResult?.recentSessions ?? [])
+        .filter((tx: any) => String(tx.chargePointId) === String(s._id))
+        .map((tx: any) => ({
+          id: tx._id,
+          connectorId: tx.connectorId,
+          idTag: tx.idTag,
+          vehicleModel: tx.vehicleModel,
+          startTimestamp: tx.startTimestamp,
+          stopTimestamp: tx.stopTimestamp,
+          energyKwh: round2((tx.energyWh ?? 0) / 1000),
+          tariffPerKwh: tx.tariffPerKwh,
+          cost: round2(tx.cost ?? 0),
+          feeAmount: round2(tx.feeAmount ?? 0),
+          clientNet: round2((tx.cost ?? 0) - (tx.feeAmount ?? 0)),
+        }));
+
       return {
         chargePointId: String(s._id),
         cpId: s.cpId ?? String(s._id),
@@ -258,6 +274,7 @@ reportsRouter.get(
         feeAmount: fee,
         gross,
         clientNet: net,
+        sessions: stationSessions,
         formula: {
           kwhFormula: `${wh} Вт.ц ÷ 1,000 = ${kwh} кВт.ц`,
           grossFormula: `${kwh} кВт.ц × ${s.tariffPerKwh ?? 0}₮ = ${gross}₮ (хэрэглэгч төлсөн)`,
