@@ -704,14 +704,14 @@ export async function checkEbarimtMerchant(merchantId: string) {
 
 
 // ---------------------------------------------------------------------------
-// Буцаалт — returning (cancelling) a receipt at the PosAPI
+// ---------------------------------------------------------------------------
+// Буцаалт ба Жагсаалт — receipts listing & returning at PosAPI
 // ---------------------------------------------------------------------------
 
-/** Receipts written by the fallback paths above never reached the PosAPI. */
+/** Receipts written by the fallback paths never reached the PosAPI. */
 function isLocalOnlyReceipt(e: { receiptId?: string | null; lottery?: string | null; error?: string | null }): boolean {
   const id = e.receiptId ?? '';
   const lottery = e.lottery ?? '';
-  // Neither DDTD nor lottery means no receipt was returned by PosAPI
   if (!id && !lottery) return true;
   if (id && (id.startsWith('MOCK-') || id.startsWith('REC-'))) return true;
   return Boolean(e.error);
@@ -726,53 +726,33 @@ function posApiDate(e: { issuedAt?: Date | null; rawResponse?: unknown }): strin
 }
 
 /**
- * Return the e-barimt receipt of a transaction (PosAPI 3.0 `DELETE /rest/receipt`)
- * and mark it REFUNDED. A receipt that never reached the PosAPI is only marked.
- * Throws a 502 when the PosAPI refuses or cannot be reached, so the caller can
- * stop before any money moves.
+ * Call PosAPI 3.0 DELETE /rest/receipt to cancel/refund a receipt at the national tax service.
  */
-export async function returnEBarimtForTransaction(
-  tx: TransactionDoc,
-): Promise<{ returned: boolean }> {
-  const e = tx.ebarimt;
-  // Nothing was issued (none requested, or the PosAPI call failed): nothing to return.
-  if (!e || e.status !== 'SUCCESS') return { returned: false };
-  if (!e.receiptId && !e.lottery) return { returned: false };
+async function callPosApiReturnReceipt(receipt: {
+  receiptId?: string | null;
+  lottery?: string | null;
+  merchantTin?: string | null;
+  issuedAt?: Date | null;
+  rawResponse?: unknown;
+}): Promise<{ data: Record<string, unknown>; skipped?: boolean }> {
+  const id = receipt.receiptId ?? '';
+  const lottery = receipt.lottery ?? '';
 
-  // A fake receipt left by the old fallback code never reached the PosAPI.
-  if (isLocalOnlyReceipt(e)) {
-    await Transaction.updateOne(
-      { _id: tx._id },
-      {
-        $set: {
-          'ebarimt.status': 'REFUNDED',
-          'ebarimt.returnedAt': new Date(),
-          'ebarimt.returnResponse': { skipped: 'receipt was never registered at the PosAPI' },
-        },
-      },
-    );
-    return { returned: false };
+  if (!id && !lottery) {
+    throw new HttpError(400, 'Баримтад ДДТД болон сугалааны дугаар байхгүй тул буцаах боломжгүй.');
   }
 
-  // A receipt without a PosAPI id/DDTD (non-VAT payer with only a lottery number)
-  // cannot be deleted by id at PosAPI. Mark it refunded locally so money can be safely refunded.
-  if (!e.receiptId) {
-    await Transaction.updateOne(
-      { _id: tx._id },
-      {
-        $set: {
-          'ebarimt.status': 'REFUNDED',
-          'ebarimt.returnedAt': new Date(),
-          'ebarimt.returnResponse': { skipped: 'receipt has no DDTD/receiptId (non-VAT payer)' },
-        },
-      },
-    );
-    ebarimtLogger.info({ transactionId: tx._id, lottery: e.lottery }, 'e-barimt non-VAT receipt marked returned');
-    return { returned: true };
+  // Non-VAT receipt with only lottery number cannot be deleted by id at PosAPI
+  if (!id) {
+    return { data: { skipped: 'receipt has no DDTD/receiptId (non-VAT payer)' }, skipped: true };
+  }
+
+  if (isLocalOnlyReceipt(receipt)) {
+    return { data: { skipped: 'receipt was never registered at the PosAPI' }, skipped: true };
   }
 
   const merchant =
-    (await EbarimtMerchant.findOne({ merchantTin: e.merchantTin, enabled: true }).lean().catch(() => null)) ??
+    (await EbarimtMerchant.findOne({ merchantTin: receipt.merchantTin || undefined, enabled: true }).lean().catch(() => null)) ??
     (await EbarimtMerchant.findOne({ isDefault: true, enabled: true }).lean().catch(() => null));
   const rawUrl =
     merchant?.envMode === 'TEST'
@@ -781,7 +761,7 @@ export async function returnEBarimtForTransaction(
   if (!rawUrl) throw new HttpError(502, 'Е-баримтын PosAPI хаяг тохируулаагүй байна');
   const baseUrl = rawUrl.replace(/\/+$/, '');
 
-  const body = { id: e.receiptId, date: posApiDate(e) };
+  const body = { id, date: posApiDate(receipt) };
   let res: Response;
   try {
     res = await fetch(`${baseUrl}/rest/receipt`, {
@@ -791,25 +771,420 @@ export async function returnEBarimtForTransaction(
       signal: AbortSignal.timeout(10_000),
     });
   } catch (err) {
-    ebarimtLogger.error({ transactionId: tx._id, err: (err as Error).message }, 'e-barimt return: PosAPI unreachable');
+    ebarimtLogger.error({ receiptId: id, err: (err as Error).message }, 'e-barimt return: PosAPI unreachable');
     throw new HttpError(502, 'Е-баримтын системтэй холбогдож чадсангүй. Буцаалт хийгдээгүй.');
   }
+
   const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-  if (!res.ok) {
-    ebarimtLogger.error({ transactionId: tx._id, status: res.status, data }, 'e-barimt return refused by PosAPI');
-    throw new HttpError(502, `Е-баримт буцаахад PosAPI алдаа өглөө (HTTP ${res.status}). Буцаалт хийгдээгүй.`, data);
+  const statusCode = res.status;
+
+  if (!res.ok || statusCode >= 400) {
+    const msg = (data.message || data.error) as string | undefined;
+    ebarimtLogger.error({ receiptId: id, status: statusCode, data }, 'e-barimt return refused by PosAPI');
+    throw new HttpError(502, msg ? `Татварын системээс буцаах үед алдаа: ${msg}` : `Татварын систем ${statusCode} алдаа буцаалаа`, data);
   }
 
-  await Transaction.updateOne(
-    { _id: tx._id },
-    {
-      $set: {
-        'ebarimt.status': 'REFUNDED',
-        'ebarimt.returnedAt': new Date(),
-        'ebarimt.returnResponse': data,
+  if (data.success === false) {
+    const msg = (data.message || data.error) as string | undefined;
+    ebarimtLogger.error({ receiptId: id, data }, 'e-barimt return failed: success=false');
+    throw new HttpError(502, msg ? `Татварын системээс буцаах үед алдаа: ${msg}` : 'Татварын систем баримт буцаахаас татгалзлаа', data);
+  }
+
+  if (data.status && data.status !== 'SUCCESS') {
+    const msg = (data.message || data.error) as string | undefined;
+    ebarimtLogger.error({ receiptId: id, data }, 'e-barimt return failed: status not SUCCESS');
+    throw new HttpError(502, msg ? `Татварын системээс буцаах үед алдаа: ${msg}` : `Татварын систем status=${data.status} буцаалаа`, data);
+  }
+
+  return { data };
+}
+
+export interface ReturnEbarimtOptions {
+  source?: 'TRANSACTION' | 'PAYMENT';
+  id?: string | number;
+  receiptId?: string;
+  returnedBy?: string;
+  reason?: string;
+}
+
+/**
+ * Return an e-barimt receipt from either a Transaction or a Payment.
+ * Successfully cancels the receipt in the national ebarimt PosAPI and marks it REFUNDED in DB.
+ */
+export async function returnEBarimtReceipt(opts: ReturnEbarimtOptions): Promise<{
+  success: boolean;
+  message: string;
+  receiptId?: string;
+  returnedAt: Date;
+  source: 'TRANSACTION' | 'PAYMENT';
+  sourceId: string | number;
+}> {
+  let doc: { source: 'TRANSACTION'; tx: any } | { source: 'PAYMENT'; payment: any } | null = null;
+
+  const rawId = opts.id !== undefined && opts.id !== null ? String(opts.id).trim() : '';
+
+  if (rawId.startsWith('tx_')) {
+    const tx = await Transaction.findById(Number(rawId.slice(3)));
+    if (tx) doc = { source: 'TRANSACTION', tx };
+  } else if (rawId.startsWith('pay_')) {
+    const payment = await Payment.findById(rawId.slice(4));
+    if (payment) doc = { source: 'PAYMENT', payment };
+  } else if (opts.source === 'TRANSACTION' && rawId) {
+    const tx = await Transaction.findById(Number(rawId));
+    if (tx) doc = { source: 'TRANSACTION', tx };
+  } else if (opts.source === 'PAYMENT' && rawId) {
+    const payment = await Payment.findById(rawId);
+    if (payment) doc = { source: 'PAYMENT', payment };
+  } else if (opts.receiptId) {
+    const rId = opts.receiptId.trim();
+    const tx = await Transaction.findOne({ 'ebarimt.receiptId': rId });
+    if (tx) doc = { source: 'TRANSACTION', tx };
+    else {
+      const payment = await Payment.findOne({ 'ebarimt.receiptId': rId });
+      if (payment) doc = { source: 'PAYMENT', payment };
+    }
+  } else if (rawId) {
+    if (/^\d+$/.test(rawId)) {
+      const tx = await Transaction.findById(Number(rawId));
+      if (tx?.ebarimt) doc = { source: 'TRANSACTION', tx };
+    }
+    if (!doc) {
+      const payment = await Payment.findById(rawId).catch(() => null);
+      if (payment?.ebarimt) doc = { source: 'PAYMENT', payment };
+    }
+  }
+
+  if (!doc) {
+    throw new HttpError(404, 'Буцаах И-баримт олдсонгүй!');
+  }
+
+  const e = doc.source === 'TRANSACTION' ? doc.tx.ebarimt : doc.payment.ebarimt;
+  if (!e) {
+    throw new HttpError(404, 'Энэ бичлэгт И-баримт үүсээгүй байна!');
+  }
+
+  if (e.status === 'REFUNDED' || e.returnedAt) {
+    throw new HttpError(409, 'Энэ баримт аль хэдийн буцаагдсан байна!');
+  }
+
+  const { data } = await callPosApiReturnReceipt(e);
+  const returnedAt = new Date();
+  const returnedBy = opts.returnedBy || 'admin';
+
+  if (doc.source === 'TRANSACTION') {
+    await Transaction.updateOne(
+      { _id: doc.tx._id },
+      {
+        $set: {
+          'ebarimt.status': 'REFUNDED',
+          'ebarimt.returnedAt': returnedAt,
+          'ebarimt.returnResponse': data,
+          'ebarimt.returnedBy': returnedBy,
+        },
       },
+    );
+    ebarimtLogger.info({ transactionId: doc.tx._id, receiptId: e.receiptId }, 'e-barimt receipt returned');
+    return {
+      success: true,
+      message: e.receiptId ? `${e.receiptId} дугаартай баримт амжилттай буцаагдлаа.` : 'Баримт амжилттай буцаагдлаа.',
+      receiptId: e.receiptId,
+      returnedAt,
+      source: 'TRANSACTION',
+      sourceId: doc.tx._id,
+    };
+  } else {
+    await Payment.updateOne(
+      { _id: doc.payment._id },
+      {
+        $set: {
+          'ebarimt.status': 'REFUNDED',
+          'ebarimt.returnedAt': returnedAt,
+          'ebarimt.returnResponse': data,
+          'ebarimt.returnedBy': returnedBy,
+        },
+      },
+    );
+    ebarimtLogger.info({ paymentId: String(doc.payment._id), receiptId: e.receiptId }, 'e-barimt payment receipt returned');
+    return {
+      success: true,
+      message: e.receiptId ? `${e.receiptId} дугаартай баримт амжилттай буцаагдлаа.` : 'Баримт амжилттай буцаагдлаа.',
+      receiptId: e.receiptId,
+      returnedAt,
+      source: 'PAYMENT',
+      sourceId: String(doc.payment._id),
+    };
+  }
+}
+
+/**
+ * Backwards compatible helper for transaction refund workflow.
+ */
+export async function returnEBarimtForTransaction(
+  tx: TransactionDoc,
+): Promise<{ returned: boolean }> {
+  const e = tx.ebarimt;
+  if (!e || e.status !== 'SUCCESS') return { returned: false };
+  if (!e.receiptId && !e.lottery) return { returned: false };
+
+  try {
+    const res = await returnEBarimtReceipt({ source: 'TRANSACTION', id: tx._id, returnedBy: 'SYSTEM_REFUND' });
+    return { returned: res.success };
+  } catch (err) {
+    if (err instanceof HttpError && err.status === 409) {
+      return { returned: false };
+    }
+    throw err;
+  }
+}
+
+export interface EbarimtListParams {
+  page?: number;
+  limit?: number;
+  status?: string;
+  type?: string;
+  q?: string;
+  from?: Date;
+  to?: Date;
+  chargePointId?: string;
+}
+
+export interface EbarimtReceiptRow {
+  id: string;
+  source: 'TRANSACTION' | 'PAYMENT';
+  sourceId: string | number;
+  receiptId?: string;
+  lottery?: string;
+  qrData?: string;
+  type: 'B2C_RECEIPT' | 'B2B_RECEIPT';
+  status: 'SUCCESS' | 'REFUNDED' | 'FAILED' | 'PENDING';
+  totalAmount: number;
+  totalVAT: number;
+  merchantTin: string;
+  customerNo?: string;
+  customerTin?: string;
+  issuedAt?: string;
+  returnedAt?: string;
+  returnedBy?: string;
+  error?: string;
+  chargePointId?: string;
+  connectorId?: number;
+  driver?: { name?: string; phone?: string } | null;
+  rawResponse?: unknown;
+  returnResponse?: unknown;
+}
+
+export interface EbarimtListResult {
+  data: EbarimtReceiptRow[];
+  total: number;
+  page: number;
+  limit: number;
+  summary: {
+    totalCount: number;
+    totalAmount: number;
+    successCount: number;
+    successAmount: number;
+    refundedCount: number;
+    refundedAmount: number;
+    failedCount: number;
+  };
+}
+
+/**
+ * Retrieve paginated e-barimt receipts across transactions and payments.
+ */
+export async function listEbarimtReceipts(params: EbarimtListParams): Promise<EbarimtListResult> {
+  const page = Math.max(1, params.page || 1);
+  const limit = Math.max(1, Math.min(params.limit || 50, 500));
+  const skip = (page - 1) * limit;
+
+  const txFilter: Record<string, unknown> = {
+    'ebarimt.status': { $exists: true, $ne: null },
+  };
+  const payFilter: Record<string, unknown> = {
+    'ebarimt.status': { $exists: true, $ne: null },
+    $or: [{ transactionId: { $exists: false } }, { transactionId: null }],
+  };
+
+  if (params.status && params.status !== 'ALL') {
+    txFilter['ebarimt.status'] = params.status;
+    payFilter['ebarimt.status'] = params.status;
+  }
+  if (params.type) {
+    txFilter['ebarimt.type'] = params.type;
+    payFilter['ebarimt.type'] = params.type;
+  }
+  if (params.from || params.to) {
+    const range: Record<string, unknown> = {};
+    if (params.from) range.$gte = params.from;
+    if (params.to) range.$lte = params.to;
+    txFilter['ebarimt.issuedAt'] = range;
+    payFilter['ebarimt.issuedAt'] = range;
+  }
+  if (params.chargePointId) {
+    txFilter.chargePointId = params.chargePointId;
+    payFilter.chargePointId = params.chargePointId;
+  }
+
+  if (params.q) {
+    const term = params.q.trim();
+    const orTx: Record<string, unknown>[] = [
+      { 'ebarimt.receiptId': { $regex: term, $options: 'i' } },
+      { 'ebarimt.lottery': { $regex: term, $options: 'i' } },
+      { 'ebarimt.customerNo': { $regex: term, $options: 'i' } },
+      { 'ebarimt.customerTin': { $regex: term, $options: 'i' } },
+      { chargePointId: { $regex: term, $options: 'i' } },
+    ];
+    if (/^\d+$/.test(term)) {
+      orTx.push({ _id: Number(term) });
+    }
+    txFilter.$or = orTx;
+
+    const orPay: Record<string, unknown>[] = [
+      { 'ebarimt.receiptId': { $regex: term, $options: 'i' } },
+      { 'ebarimt.lottery': { $regex: term, $options: 'i' } },
+      { 'ebarimt.customerNo': { $regex: term, $options: 'i' } },
+      { 'ebarimt.customerTin': { $regex: term, $options: 'i' } },
+      { senderInvoiceNo: { $regex: term, $options: 'i' } },
+    ];
+    payFilter.$or = orPay;
+  }
+
+  const [txDocs, payDocs] = await Promise.all([
+    Transaction.find(txFilter).lean(),
+    Payment.find(payFilter).lean(),
+  ]);
+
+  const idTags = txDocs.map((t) => t.idTag).filter(Boolean);
+  const payUserIds = payDocs.map((p) => p.userId ?? p.walletOwnerId ?? '').filter(Boolean);
+
+  const [driverByIdTagMap, driverByIdMap] = await Promise.all([
+    store.findUsersByIdTags(idTags).catch(() => new Map<string, any>()),
+    store.findUsersByIds(payUserIds).catch(() => new Map<string, any>()),
+  ]);
+
+  const rows: EbarimtReceiptRow[] = [];
+
+  let totalAmount = 0;
+  let successCount = 0;
+  let successAmount = 0;
+  let refundedCount = 0;
+  let refundedAmount = 0;
+  let failedCount = 0;
+
+  for (const t of txDocs) {
+    const eb = t.ebarimt as any;
+    if (!eb) continue;
+    const amount = Number(eb.totalAmount || t.cost || 0);
+    const vat = Number(eb.totalVAT || 0);
+    const status = (eb.status || 'SUCCESS') as 'SUCCESS' | 'REFUNDED' | 'FAILED' | 'PENDING';
+
+    totalAmount += amount;
+    if (status === 'SUCCESS') {
+      successCount++;
+      successAmount += amount;
+    } else if (status === 'REFUNDED') {
+      refundedCount++;
+      refundedAmount += amount;
+    } else if (status === 'FAILED') {
+      failedCount++;
+    }
+
+    const driver = t.idTag ? driverByIdTagMap.get(t.idTag) : null;
+
+    rows.push({
+      id: `tx_${t._id}`,
+      source: 'TRANSACTION',
+      sourceId: t._id,
+      receiptId: eb.receiptId,
+      lottery: eb.lottery,
+      qrData: eb.qrData,
+      type: eb.type || 'B2C_RECEIPT',
+      status,
+      totalAmount: amount,
+      totalVAT: vat,
+      merchantTin: eb.merchantTin || '',
+      customerNo: eb.customerNo,
+      customerTin: eb.customerTin,
+      issuedAt: eb.issuedAt ? new Date(eb.issuedAt).toISOString() : (t.createdAt ? new Date(t.createdAt).toISOString() : undefined),
+      returnedAt: eb.returnedAt ? new Date(eb.returnedAt).toISOString() : undefined,
+      returnedBy: eb.returnedBy,
+      error: eb.error,
+      chargePointId: String(t.chargePointId),
+      connectorId: t.connectorId,
+      driver: driver ? { name: driver.name, phone: driver.phone } : null,
+      rawResponse: eb.rawResponse,
+      returnResponse: eb.returnResponse,
+    });
+  }
+
+  for (const p of payDocs) {
+    const eb = p.ebarimt as any;
+    if (!eb) continue;
+    const amount = Number(eb.totalAmount || p.paidAmount || p.amount || 0);
+    const vat = Number(eb.totalVAT || 0);
+    const status = (eb.status || 'SUCCESS') as 'SUCCESS' | 'REFUNDED' | 'FAILED' | 'PENDING';
+
+    totalAmount += amount;
+    if (status === 'SUCCESS') {
+      successCount++;
+      successAmount += amount;
+    } else if (status === 'REFUNDED') {
+      refundedCount++;
+      refundedAmount += amount;
+    } else if (status === 'FAILED') {
+      failedCount++;
+    }
+
+    const uId = p.userId ?? p.walletOwnerId ?? '';
+    const driver = uId ? driverByIdMap.get(uId) : null;
+
+    rows.push({
+      id: `pay_${p._id}`,
+      source: 'PAYMENT',
+      sourceId: String(p._id),
+      receiptId: eb.receiptId,
+      lottery: eb.lottery,
+      qrData: eb.qrData,
+      type: eb.type || 'B2C_RECEIPT',
+      status,
+      totalAmount: amount,
+      totalVAT: vat,
+      merchantTin: eb.merchantTin || '',
+      customerNo: eb.customerNo,
+      customerTin: eb.customerTin,
+      issuedAt: eb.issuedAt ? new Date(eb.issuedAt).toISOString() : (p.createdAt ? new Date(p.createdAt).toISOString() : undefined),
+      returnedAt: eb.returnedAt ? new Date(eb.returnedAt).toISOString() : undefined,
+      returnedBy: eb.returnedBy,
+      error: eb.error,
+      chargePointId: p.chargePointId ? String(p.chargePointId) : undefined,
+      connectorId: p.connectorId !== null && p.connectorId !== undefined ? p.connectorId : undefined,
+      driver: driver ? { name: driver.name, phone: driver.phone } : null,
+      rawResponse: eb.rawResponse,
+      returnResponse: eb.returnResponse,
+    });
+  }
+
+  rows.sort((a, b) => {
+    const timeA = a.issuedAt ? new Date(a.issuedAt).getTime() : 0;
+    const timeB = b.issuedAt ? new Date(b.issuedAt).getTime() : 0;
+    return timeB - timeA;
+  });
+
+  const pagedData = rows.slice(skip, skip + limit);
+
+  return {
+    data: pagedData,
+    total: rows.length,
+    page,
+    limit,
+    summary: {
+      totalCount: rows.length,
+      totalAmount,
+      successCount,
+      successAmount,
+      refundedCount,
+      refundedAmount,
+      failedCount,
     },
-  );
-  ebarimtLogger.info({ transactionId: tx._id, receiptId: e.receiptId }, 'e-barimt receipt returned');
-  return { returned: true };
+  };
 }

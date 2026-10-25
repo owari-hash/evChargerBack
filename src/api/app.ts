@@ -30,6 +30,7 @@ import { securityRouter } from './routes/security.routes';
 import { transactionsRouter } from './routes/transactions.routes';
 import { walletsRouter } from './routes/wallets.routes';
 import { ebarimtMerchantsRouter } from './routes/ebarimt-merchants.routes';
+import { ebarimtRouter } from './routes/ebarimt.routes';
 import { appReleasesRouter } from './routes/appReleases.routes';
 import { clientsRouter } from './routes/clients.routes';
 import { connectorAdminRouter } from './routes/connectors.routes';
@@ -162,6 +163,7 @@ export function createApp(): Express {
   api.use('/wallets', walletsRouter);
   api.use('/qpay', qpayRouter);
   api.use('/ebarimt-merchants', ebarimtMerchantsRouter);
+  api.use('/ebarimt', ebarimtRouter);
   api.use('/app-releases', appReleasesRouter);
   api.use('/clients', clientsRouter);
   api.use('/announcements', announcementsRouter);

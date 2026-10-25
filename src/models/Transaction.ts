@@ -100,6 +100,7 @@ const transactionSchema = new Schema(
       /** Set when the receipt was returned (cancelled) at the PosAPI. */
       returnedAt: { type: Date },
       returnResponse: { type: Schema.Types.Mixed },
+      returnedBy: { type: String },
       error: { type: String },
       rawResponse: { type: Schema.Types.Mixed },
     },
