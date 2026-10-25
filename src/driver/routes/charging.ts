@@ -35,6 +35,7 @@ import type { StoredUser } from '../store';
 import type { ChargingSession } from '../types';
 import { stationQuerySchema } from '../validation';
 import { isInternalTag } from '../../services/wallet.service';
+import { bus } from '../../realtime/events';
 import {
   checkTopUp,
   createTopUp,
@@ -62,6 +63,65 @@ stationRoutes.get(
   '/',
   route(async (req) => listStations(parseQuery(req, stationQuerySchema))),
 );
+
+/**
+ * GET /app-api/stations/status-stream — Server-Sent Events.
+ *
+ * Pushes `{ online, offline }` station counts for the site's top-bar badge:
+ * once on connect, then whenever a charger connects, disconnects, boots or
+ * reports a connector status (debounced), and every 30s to catch a charger
+ * that simply went quiet. Public, like the station list it summarises.
+ * Declared before `/:id` so the path is not taken for a station id.
+ */
+stationRoutes.get('/status-stream', (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.write('retry: 5000\n\n');
+
+  let last = '';
+  let closed = false;
+  const push = async () => {
+    try {
+      const { stations } = await listStations(stationQuerySchema.parse({ limit: 200 }));
+      const offline = stations.filter((s) => s.availability === 'offline').length;
+      const payload = JSON.stringify({ online: stations.length - offline, offline });
+      if (closed || payload === last) return;
+      last = payload;
+      res.write(`event: counts\ndata: ${payload}\n\n`);
+    } catch {
+      // A failed read keeps the last counts on screen; the next event retries.
+    }
+  };
+
+  let debounce: NodeJS.Timeout | undefined;
+  const RELEVANT = new Set([
+    'chargepoint.connected',
+    'chargepoint.disconnected',
+    'chargepoint.boot',
+    'connector.status',
+  ]);
+  const off = bus.onAny((e) => {
+    if (!RELEVANT.has(e.event)) return;
+    clearTimeout(debounce);
+    debounce = setTimeout(() => void push(), 1000);
+  });
+  const tick = setInterval(() => void push(), 30_000);
+  const keepAlive = setInterval(() => res.write(': ping\n\n'), 25_000);
+  void push();
+
+  req.on('close', () => {
+    closed = true;
+    clearTimeout(debounce);
+    clearInterval(tick);
+    clearInterval(keepAlive);
+    off();
+    res.end();
+  });
+});
 
 stationRoutes.get(
   '/:id',
