@@ -88,6 +88,12 @@ const chargePointSchema = new Schema(
     /** The rate in effect whenever no `tariffZones` entry covers the time. */
     tariffPerKwh: { type: Number },
     /**
+     * Listed on the kiosk and the app (station list, map, counts). Off hides a
+     * test or not-yet-open station from drivers; a QR sticker on it still
+     * works. Absent on older records, which counts as on.
+     */
+    showOnKiosk: { type: Boolean, default: true },
+    /**
      * Time-of-day pricing — e.g. 13:00–17:00 at one rate, 17:00–20:00 at
      * another. `startMinute`/`endMinute` are minutes since local (Mongolia,
      * UTC+8) midnight, `startMinute < endMinute`, no wraparound past midnight

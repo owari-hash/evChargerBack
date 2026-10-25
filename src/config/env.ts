@@ -194,7 +194,7 @@ const schema = z.object({
   /** Master switch for /api/wallets, session debiting and Authorize pre-checks. */
   WALLET_ENABLED: bool(true),
   /** Amounts the top-up screens offer as one-tap buttons, in MNT. */
-  WALLET_TOPUP_PRESETS: intList([1000, 3000, 5000, 10000, 20000, 50000, 100000]),
+  WALLET_TOPUP_PRESETS: intList([1000, 3000, 5000, 10000, 20000, 50000, 100000, 200000]),
   /** Bounds on a freely typed top-up amount, in MNT. */
   WALLET_TOPUP_MIN: int(100),
   WALLET_TOPUP_MAX: int(5_000_000),

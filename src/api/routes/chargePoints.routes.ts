@@ -127,6 +127,8 @@ const createSchema = z.object({
   longitude: z.number().optional(),
   address: z.string().optional(),
   tariffPerKwh: z.number().nonnegative().optional(),
+  /** Off hides the station from the kiosk and app lists. */
+  showOnKiosk: z.boolean().optional(),
   /** Time-of-day pricing; see the model for how zones are matched. */
   tariffZones: z
     .array(

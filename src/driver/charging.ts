@@ -310,7 +310,11 @@ const AVAILABILITY_RANK: Record<StationAvailability, number> = {
 export async function listStations(
   query: StationQuery,
 ): Promise<{ stations: Station[]; demo: false }> {
-  const chargePoints = await ChargePoint.find({}).sort({ _id: 1 }).limit(500).lean<RawChargePoint[]>();
+  // Stations an operator switched off «Kiosk-д харуулах» are left out.
+  const chargePoints = await ChargePoint.find({ showOnKiosk: { $ne: false } })
+    .sort({ _id: 1 })
+    .limit(500)
+    .lean<RawChargePoint[]>();
   const connectors = await Connector.find({
     chargePointId: { $in: objectIdsOnly(chargePoints.map((cp) => cp._id)) },
   }).lean<Array<RawConnector & { chargePointId: unknown }>>();
