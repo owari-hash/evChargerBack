@@ -11,6 +11,7 @@ import { connectionManager } from '../ocpp/manager';
 import { SUPPORTED_ACTIONS } from '../ocpp/schemas';
 import { errorHandler, notFoundHandler } from './middleware';
 import { announcementsRouter } from './routes/announcements.routes';
+import { feedbackRouter } from './routes/feedback.routes';
 import { authRouter } from './routes/auth.routes';
 import { chargePointsRouter } from './routes/chargePoints.routes';
 import { commandsRouter } from './routes/commands.routes';
@@ -170,6 +171,7 @@ export function createApp(): Express {
   api.use('/app-releases', appReleasesRouter);
   api.use('/clients', clientsRouter);
   api.use('/announcements', announcementsRouter);
+  api.use('/feedback', feedbackRouter);
   // Mounted at the API root: it owns both /charge-points/:id/connectors and /connectors/:id.
   api.use('/', connectorAdminRouter);
   api.use('/settlements', settlementsRouter);
