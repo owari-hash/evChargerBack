@@ -1,6 +1,6 @@
 import { env } from '../../config/env';
 
-const brand = () => env.BRAND_NAME;
+const brand = () => 'Eplug';
 
 function layout(title: string, body: string, cta?: { url: string; label: string }): string {
   const button = cta
@@ -10,7 +10,16 @@ function layout(title: string, body: string, cta?: { url: string; label: string 
 
   return `<!doctype html><html lang="mn"><body style="margin:0;background:#f1f5f9;padding:28px;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#0f172a">
   <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:16px;padding:32px">
-    <p style="font-size:18px;font-weight:700;margin:0 0 24px">${brand()}</p>
+    <table role="presentation" border="0" cellpadding="0" cellspacing="0" style="margin:0 0 24px">
+      <tr>
+        <td style="vertical-align:middle;padding-right:10px">
+          <img src="${env.APP_URL}/eplug-mark.png" alt="Eplug" width="32" height="32" style="width:32px;height:32px;border-radius:8px;display:block" />
+        </td>
+        <td style="vertical-align:middle">
+          <span style="font-size:18px;font-weight:700;color:#0f172a">${brand()}</span>
+        </td>
+      </tr>
+    </table>
     <h1 style="font-size:20px;margin:0 0 12px">${title}</h1>
     ${body}
     ${button}
