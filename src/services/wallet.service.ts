@@ -292,10 +292,11 @@ export async function credit(
       try {
         const phone = await resolvePhoneForWalletOwner(owner, ref);
         if (phone) {
+          const topUpAmountStr = value.toLocaleString('mn-MN');
           const balanceStr = (wallet.balance ?? 0).toLocaleString('mn-MN');
           await sendSms({
             to: phone,
-            text: templates.walletTopUpSms(balanceStr),
+            text: templates.walletTopUpSms(topUpAmountStr, balanceStr),
           });
         }
       } catch (smsErr) {

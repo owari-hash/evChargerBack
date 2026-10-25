@@ -313,10 +313,11 @@ async function sendSessionStopSms(tx: TransactionDoc): Promise<void> {
     if (phone) {
       const balance = owner ? await balanceOf(owner) : 0;
       const kwh = ((tx.energyWh ?? 0) / 1000).toFixed(2);
+      const usedAmountStr = (tx.cost ?? 0).toLocaleString('mn-MN');
       const balanceStr = balance.toLocaleString('mn-MN');
       await sendSms({
         to: phone,
-        text: templates.sessionStopSms(kwh, balanceStr),
+        text: templates.sessionStopSms(kwh, usedAmountStr, balanceStr),
       });
     }
   } catch (err) {

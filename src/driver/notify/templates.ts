@@ -43,10 +43,17 @@ export function phoneVerifySms(code: string, minutes: number): string {
   return `Batalgaajuulakh code ${code}. ${minutes} minutyn daraa khuchingui bolno.`;
 }
 
-export function walletTopUpSms(uldegdel: string): string {
-  return `Tany hetewch amjilttai tseneglegdlee. Tany uldegdel ${uldegdel}`;
+export function walletTopUpSms(topUpAmount: string | number, uldegdel?: string): string {
+  if (uldegdel) {
+    return `Tany hetewch ${topUpAmount} dungeer tseneglegdlee. Tany uldegdel ${uldegdel}`;
+  }
+  return `Tany hetewch ${topUpAmount} dungeer tseneglegdlee`;
 }
 
-export function sessionStopSms(kwh: string | number, uldegdel: string): string {
-  return `Ta ${kwh}kwt ashiglaj tany uldegdel ${uldegdel} bolloo`;
+export function sessionStopSms(
+  kwh: string | number,
+  usedAmount: string | number,
+  uldegdel: string,
+): string {
+  return `Ta ${kwh}kwt ashiglaj tany hetewchnees ${usedAmount} dun hasagdaj tany uldegdel ${uldegdel} bolloo`;
 }
