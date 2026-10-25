@@ -175,6 +175,16 @@ driverNotificationsRoutes.post(
   }),
 );
 
+/** «Цэвэрлэх»: empties this driver's notification list. */
+driverNotificationsRoutes.delete(
+  '/',
+  route(async (req) => {
+    const user = await requireUser(req);
+    await DriverNotification.deleteMany({ userId: user.id });
+    return { ok: true };
+  }),
+);
+
 driverNotificationsRoutes.delete(
   '/:id',
   route(async (req) => {
