@@ -306,17 +306,16 @@ export async function issueEBarimtForTransaction(
     throw badRequest('Төлбөртэй, дууссан цэнэглэлтэд л е-баримт олгоно');
   }
 
-  // One receipt per sale. Asking again for the same receipt returns it; asking
-  // for a different one (B2C → B2B, another TIN) returns the old one at the
-  // PosAPI first, so the sale is never receipted twice.
+  // One receipt per sale. Once issued, a tax receipt is permanent and cannot be
+  // switched or regenerated. If already issued with the same options, return it safely.
   const existing = tx.ebarimt;
-  if (existing?.status === 'SUCCESS' && !isLocalOnlyReceipt(existing)) {
+  if (existing?.status === 'SUCCESS' && !isLocalOnlyReceipt(existing) && (existing.receiptId || existing.lottery)) {
     const wantB2B = options.type === 'B2B_RECEIPT' || Boolean(options.customerTin);
     const sameReceipt =
       (existing.type === 'B2B_RECEIPT') === wantB2B &&
       (!wantB2B || existing.customerTin === options.customerTin);
     if (sameReceipt) return tx;
-    await returnEBarimtForTransaction(tx);
+    throw badRequest('Энэ гүйлгээнд И-Баримт аль хэдийн олгогдсон тул өөрчлөх боломжгүй.');
   }
 
   const finalAmount = tx.cost;

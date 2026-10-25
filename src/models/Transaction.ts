@@ -78,6 +78,7 @@ const transactionSchema = new Schema(
       state: { type: String, enum: ['PENDING', 'DONE'] },
       amount: { type: Number },
       reason: { type: String },
+      accountNumber: { type: String },
       refundedBy: { type: String },
       refundedAt: { type: Date },
       walletEntryId: { type: String },

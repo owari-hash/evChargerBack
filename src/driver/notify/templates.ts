@@ -45,9 +45,9 @@ export function phoneVerifySms(code: string, minutes: number): string {
 
 export function walletTopUpSms(topUpAmount: string | number, uldegdel?: string): string {
   if (uldegdel) {
-    return `Tany hetewch ${topUpAmount} dungeer tseneglegdlee. Tany uldegdel ${uldegdel}`;
+    return `tany hetewch ${topUpAmount} amjilttai tseneglegdlee, uldegdel ${uldegdel}`;
   }
-  return `Tany hetewch ${topUpAmount} dungeer tseneglegdlee`;
+  return `tany hetewch ${topUpAmount} amjilttai tseneglegdlee`;
 }
 
 export function sessionStopSms(
@@ -55,5 +55,16 @@ export function sessionStopSms(
   usedAmount: string | number,
   uldegdel: string,
 ): string {
-  return `Ta ${kwh}kwt ashiglaj tany hetewchnees ${usedAmount} dun hasagdaj tany uldegdel ${uldegdel} bolloo`;
+  return `${kwh}kwt ashiglaj ${usedAmount} tolbor tologdloo, uldegdel ${uldegdel}`;
+}
+
+export function refundSms(
+  amount: string | number,
+  accountNumber: string | undefined,
+  uldegdel: string | number,
+): string {
+  if (accountNumber) {
+    return `Eplug butsaaltiin ${amount} dun ${accountNumber} toot dansand shiljuullee. uldegdel ${uldegdel}`;
+  }
+  return `Eplug butsaaltiin ${amount} dun dansand shiljuullee. uldegdel ${uldegdel}`;
 }

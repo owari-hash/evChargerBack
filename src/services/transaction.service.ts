@@ -266,10 +266,7 @@ export async function stopTransaction(
         energyWh: tx.energyWh ?? 0,
       });
 
-      // Auto-issue e-Barimt so driver has it ready upon completion
-      issueEBarimtForTransaction(tx._id).catch((err: unknown) => {
-        logger.warn({ err: (err as Error).message, txId: tx._id }, 'auto-issue e-barimt for completed session failed');
-      });
+      // Driver chooses Personal (B2C) or Org (B2B) when requesting receipt
     }
 
     // Notify the driver via SMS for session end
@@ -381,9 +378,7 @@ export async function closeFromLastMeter(
       energyWh: tx.energyWh ?? 0,
     });
 
-    issueEBarimtForTransaction(tx._id).catch((err: unknown) => {
-      logger.warn({ err: (err as Error).message, txId: tx._id }, 'auto-issue e-barimt for csms-closed session failed');
-    });
+    // Driver chooses Personal (B2C) or Org (B2B) when requesting receipt
 
     void sendSessionStopSms(tx);
   }
