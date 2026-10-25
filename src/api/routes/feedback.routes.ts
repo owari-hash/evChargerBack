@@ -4,6 +4,7 @@ import { Feedback } from '../../models/Feedback';
 import { asyncHandler, requireAuth, requireOperator, validate } from '../middleware';
 
 export const feedbackAdminRouter = Router();
+export const feedbackRouter = feedbackAdminRouter;
 
 feedbackAdminRouter.use(requireAuth, requireOperator);
 

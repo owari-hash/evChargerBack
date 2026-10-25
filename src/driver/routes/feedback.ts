@@ -41,13 +41,9 @@ feedbackRoutes.post(
       status: 'NEW',
     });
 
-    // Format SMS: starts with "sanal huselt irlee."
+    // Format SMS: "sanal huselt irlee." (no message content)
     const cleanPhone = resolvedPhone ? resolvedPhone.replace(/\D/g, '').slice(-8) : '';
-    const senderPart = cleanPhone ? ` Utsas: ${cleanPhone}.` : '';
-    const cleanMsg = message.replace(/\s+/g, ' ').trim();
-    // Keep preview concise so it fits standard SMS length cleanly
-    const msgPart = cleanMsg ? ` Utga: ${cleanMsg.length > 70 ? cleanMsg.slice(0, 67) + '...' : cleanMsg}` : '';
-    const smsText = `sanal huselt irlee.${senderPart}${msgPart}`;
+    const smsText = cleanPhone ? `sanal huselt irlee. Utas: ${cleanPhone}` : 'sanal huselt irlee.';
 
     // Target phones: defaults to 88887207, 95393408, 99246123
     const configured = (env.FEEDBACK_NOTIFY_PHONES || DEFAULT_NOTIFY_PHONES.join(','))
