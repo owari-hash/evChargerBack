@@ -44,7 +44,7 @@ feedbackRoutes.post(
 
     // Format SMS: "sanal huselt irlee." (no message content)
     const cleanPhone = resolvedPhone ? resolvedPhone.replace(/\D/g, '').slice(-8) : '';
-    const smsText = cleanPhone ? `sanal huselt irlee. Utsas: ${cleanPhone}` : 'sanal huselt irlee.';
+    const smsText = cleanPhone ? `sanal huselt irlee.` : `sanal huselt irlee.`;
 
     // Target phones: defaults to 88887207, 95393408, 99246123
     const configured = (env.FEEDBACK_NOTIFY_PHONES || DEFAULT_NOTIFY_PHONES.join(','))
