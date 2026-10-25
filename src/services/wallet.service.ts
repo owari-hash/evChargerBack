@@ -528,7 +528,7 @@ export async function chargeSessionToWallet(input: {
       debitAmount,
       'CHARGE',
       {
-        description: `Цэнэглэлт #${input.transactionId} · ${kwh} кВт·ц${debitAmount < amount ? ' (Үлдэгдэл хүрэлцээгүй)' : ''}`,
+        description: `Цэнэглэлт #${input.transactionId} · ${kwh} кВт·ц`,
         idempotencyKey: `transaction:${input.transactionId}`,
         transactionId: input.transactionId,
         chargePointId: input.chargePointId,
