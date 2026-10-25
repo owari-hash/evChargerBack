@@ -15,17 +15,17 @@ function layout(title: string, body: string, cta?: { url: string; label: string 
     ${body}
     ${button}
     <hr style="border:none;border-top:1px solid #e2e8f0;margin:28px 0">
-    <p style="color:#94a3b8;font-size:12px;margin:0">Хэн нэгэн ${brand()} дээр энэ хаягийг ашигласан тул та энэ и-мэйлийг хүлээн авлаа. Хэрэв та биш бол ямар нэг зүйл хийх шаардлагагүй.</p>
+    <p style="color:#94a3b8;font-size:12px;margin:0">Хэн нэгэн Eplug дээр энэ хаягийг ашигласан тул та энэ и-мэйлийг хүлээн авлаа. Хэрэв та биш бол ямар нэг зүйл хийх шаардлагагүй.</p>
   </div></body></html>`;
 }
 
 export function verifyEmail(url: string) {
   return {
-    subject: `${brand()} и-мэйл хаягаа баталгаажуулах`,
+    subject: `Eplug и-мэйл хаягаа баталгаажуулах`,
     text: `${brand()}-д тавтай морил. Энэ холбоосыг нээж и-мэйл хаягаа баталгаажуулна уу:\n\n${url}`,
     html: layout(
       'И-мэйл хаягаа баталгаажуулах',
-      `<p style="line-height:1.6;margin:0">${brand()} бүртгэл үүсгэсэнд баярлалаа. Цэнэглэлтийн баримт, бүртгэлийн мэдэгдэл илгээх боломжтой болгохын тулд хаягаа баталгаажуулна уу.</p>`,
+      `<p style="line-height:1.6;margin:0">Eplug бүртгэл үүсгэсэнд баярлалаа. Цэнэглэлтийн баримт, бүртгэлийн мэдэгдэл илгээх боломжтой болгохын тулд хаягаа баталгаажуулна уу.</p>`,
       { url, label: 'И-мэйл баталгаажуулах' },
     ),
   };
