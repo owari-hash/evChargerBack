@@ -362,10 +362,9 @@ sessionRoutes.post(
       throw badRequest('Байгууллагын регистрийн дугаарыг зөв оруулна уу');
     }
 
+    const rawNo = customerNo?.trim() || user.ebarimtCustomerNo?.trim() || user.phone?.trim();
     const resolvedCustomerNo =
-      type === 'B2C_RECEIPT'
-        ? customerNo?.trim() || user.ebarimtCustomerNo || (user.phone && /^\d{8}$/.test(user.phone) ? user.phone : undefined)
-        : undefined;
+      type === 'B2C_RECEIPT' && rawNo && /^\d{8}$/.test(rawNo) ? rawNo : undefined;
 
     const session = await requestEBarimt(transactionId, {
       type,
