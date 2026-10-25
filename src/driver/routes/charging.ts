@@ -4,8 +4,11 @@ import { env } from '../../config/env';
 import { getCurrentUser, requireUser } from '../auth/session';
 import { ensureChargeTag } from '../charge-tag';
 import {
+  connectorsInUseByOthers,
   decorateSessions,
   getStation,
+  holdConnector,
+  releaseConnectorHold,
   getTransaction,
   listSessionsForIdTag,
   listStations,
@@ -101,14 +104,55 @@ stationRoutes.get(
         null;
     }
 
+    const taken = await connectorsInUseByOthers(station.id, user?.idTag ?? undefined);
+
     return {
       availability: station.availability,
-      connectors: station.connectors,
+      connectors: station.connectors.map((c) => ({
+        ...c,
+        inUseByOther: taken.has(c.connectorId),
+      })),
       availableConnectors: station.availableConnectors,
       totalConnectors: station.totalConnectors,
       tariffPerKwh: station.tariffPerKwh,
       session,
     };
+  }),
+);
+
+const holdSchema = z.object({
+  connectorId: z.coerce.number().int().min(1).max(64),
+});
+
+/**
+ * "I scanned this gun and I'm at it." Called by the kiosk and app every few
+ * seconds while the scanned gun is open and not yet started, so a second
+ * driver scanning the same sticker sees it as in use. `{ held: false }` means
+ * someone else already has it.
+ */
+stationRoutes.post(
+  '/:id/hold',
+  route(async (req) => {
+    const user = await requireUser(req);
+    const parsed = holdSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      throw new DriverError(400, 'Тэмдэглэсэн талбаруудаа шалгана уу', fieldErrors(parsed.error));
+    }
+    const idTag = user.idTag ?? (await ensureChargeTag(user));
+    if (!idTag) return { held: false };
+    return { held: await holdConnector(req.params.id!, parsed.data.connectorId, idTag) };
+  }),
+);
+
+/** Lets go of this driver's scan hold, e.g. they went back to scan another gun. */
+stationRoutes.post(
+  '/:id/release',
+  route(async (req) => {
+    const user = await requireUser(req);
+    const parsed = holdSchema.safeParse(req.body ?? {});
+    if (!parsed.success || !user.idTag) return { released: false };
+    await releaseConnectorHold(req.params.id!, parsed.data.connectorId, user.idTag);
+    return { released: true };
   }),
 );
 

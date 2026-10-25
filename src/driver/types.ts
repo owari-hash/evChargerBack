@@ -32,6 +32,12 @@ export interface StationConnector {
   lastPowerW?: number;
   lastSocPercent?: number;
   statusTimestamp?: string;
+  /**
+   * Another driver has this gun: they scanned it and have it open, a start
+   * for them is in flight, or their session is running on it. Set only by
+   * `/stations/:id/live`, relative to whoever is asking.
+   */
+  inUseByOther?: boolean;
 }
 
 export interface Station {

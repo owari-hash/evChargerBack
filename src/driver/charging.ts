@@ -65,6 +65,19 @@ interface RawConnector {
   lastPowerW?: number;
   lastSocPercent?: number;
   statusTimestamp?: Date;
+  hold?: { idTag?: string | null; until?: Date | null } | null;
+  pendingStart?: { idTag?: string | null; at?: Date | null } | null;
+}
+
+/** A driver scanned this gun and has it open, or a start on it is in flight. */
+function takenByScan(c: RawConnector, now: number): boolean {
+  const holdLive = Boolean(c.hold?.idTag && c.hold.until && c.hold.until.getTime() > now);
+  const startLive = Boolean(
+    c.pendingStart?.idTag &&
+      c.pendingStart.at &&
+      c.pendingStart.at.getTime() > now - PENDING_START_STALE_MS,
+  );
+  return holdLive || startLive;
 }
 
 interface RawChargePoint {
@@ -189,8 +202,14 @@ function toStation(cp: RawChargePoint, rawConnectors: RawConnector[], feePercent
       };
     });
 
+  // A gun someone has just scanned is not free on the map either.
+  const now = Date.now();
+  const scanTaken = new Set(
+    rawConnectors.filter((c) => takenByScan(c, now)).map((c) => c.connectorId),
+  );
   const availableConnectors = connectors.filter(
-    (c) => c.status === 'Available' && c.availability === 'Operative',
+    (c) =>
+      c.status === 'Available' && c.availability === 'Operative' && !scanTaken.has(c.connectorId),
   ).length;
 
   let availability: StationAvailability;
@@ -477,16 +496,21 @@ async function claimConnectorForStart(
   connectorId: number,
   idTag: string,
 ): Promise<boolean> {
-  const staleBefore = new Date(Date.now() - PENDING_START_STALE_MS);
+  const now = Date.now();
+  const staleBefore = new Date(now - PENDING_START_STALE_MS);
   const claimed = await Connector.findOneAndUpdate(
     {
       chargePointId,
       connectorId,
       availability: { $ne: 'Inoperative' },
       status: { $in: ['Available', 'Preparing', 'Reserved'] },
-      $or: [{ pendingStart: null }, { 'pendingStart.at': { $lt: staleBefore } }],
+      $and: [
+        { $or: [{ pendingStart: null }, { 'pendingStart.at': { $lt: staleBefore } }] },
+        // Someone else scanned this gun first and still has it open.
+        { $or: freeOfOtherHolds(idTag, new Date(now)) },
+      ],
     },
-    { $set: { pendingStart: { idTag, at: new Date() } } },
+    { $set: { pendingStart: { idTag, at: new Date(now) } } },
   );
   return claimed !== null;
 }
@@ -499,6 +523,147 @@ async function releaseConnectorClaim(chargePointId: unknown, connectorId: number
       // Best-effort: the claim still expires on its own via PENDING_START_STALE_MS.
     },
   );
+}
+
+// ---------------------------------------------------------------------------
+// Scan holds — "I'm standing at this gun"
+// ---------------------------------------------------------------------------
+
+/**
+ * How long a scan hold lasts without being refreshed. The kiosk and app
+ * refresh it every few seconds while the driver has the scanned gun open, so
+ * this is really "how long after they close the screen does the gun free up".
+ */
+const HOLD_MS = 60_000;
+
+/** Mongo filter alternatives: no live hold, or the live hold is this idTag's. */
+function freeOfOtherHolds(idTag: string | undefined, now: Date): Record<string, unknown>[] {
+  const alternatives: Record<string, unknown>[] = [
+    { hold: null },
+    { 'hold.idTag': null },
+    { 'hold.until': { $lt: now } },
+  ];
+  if (idTag) alternatives.push({ 'hold.idTag': idTag });
+  return alternatives;
+}
+
+/**
+ * Holds a scanned gun for this driver, or refreshes their hold. Refused
+ * (false) while another driver holds it, has a start in flight on it, or is
+ * charging on it — the second person to scan a sticker is then shown the gun
+ * as in use instead of being able to start on top of the first.
+ */
+export async function holdConnector(
+  chargePointId: string,
+  connectorId: number,
+  idTag: string,
+): Promise<boolean> {
+  const cp = await requireChargePoint(chargePointId);
+  const now = new Date();
+  const staleBefore = new Date(now.getTime() - PENDING_START_STALE_MS);
+
+  const doc = await Connector.findOne({ chargePointId: cp._id, connectorId })
+    .select('currentTransactionId')
+    .lean<{ currentTransactionId?: number | null }>();
+  if (!doc) return false;
+  if (doc.currentTransactionId != null) {
+    // Their own running session is not "someone else's".
+    const tx = await Transaction.findById(doc.currentTransactionId)
+      .select('idTag status')
+      .lean<{ idTag?: string; status?: string }>();
+    if (tx && tx.status === 'Active' && tx.idTag !== idTag) return false;
+  }
+
+  const held = await Connector.findOneAndUpdate(
+    {
+      chargePointId: cp._id,
+      connectorId,
+      $and: [
+        { $or: freeOfOtherHolds(idTag, now) },
+        {
+          $or: [
+            { pendingStart: null },
+            { 'pendingStart.idTag': idTag },
+            { 'pendingStart.at': { $lt: staleBefore } },
+          ],
+        },
+      ],
+    },
+    { $set: { hold: { idTag, until: new Date(now.getTime() + HOLD_MS) } } },
+  );
+  return held !== null;
+}
+
+/** Lets go of this driver's hold, e.g. when they choose to scan another gun. */
+export async function releaseConnectorHold(
+  chargePointId: string,
+  connectorId: number,
+  idTag: string,
+): Promise<void> {
+  const cp = await findChargePoint(chargePointId);
+  if (!cp) return;
+  await Connector.updateOne(
+    { chargePointId: cp._id, connectorId, 'hold.idTag': idTag },
+    { $set: { hold: null } },
+  );
+}
+
+/**
+ * Which of a station's guns are taken by a driver other than `idTag` (a
+ * signed-out viewer counts every taker as "other"): a live scan hold, a start
+ * in flight, or a running session.
+ */
+export async function connectorsInUseByOthers(
+  chargePointId: string,
+  idTag: string | undefined,
+): Promise<Set<number>> {
+  const cp = await findChargePoint(chargePointId);
+  const taken = new Set<number>();
+  if (!cp) return taken;
+
+  const now = Date.now();
+  const rows = await Connector.find({ chargePointId: cp._id, connectorId: { $gt: 0 } })
+    .select('connectorId hold pendingStart currentTransactionId')
+    .lean<
+      {
+        connectorId: number;
+        hold?: { idTag?: string | null; until?: Date | null } | null;
+        pendingStart?: { idTag?: string | null; at?: Date | null } | null;
+        currentTransactionId?: number | null;
+      }[]
+    >();
+
+  const txIds = rows
+    .map((r) => r.currentTransactionId)
+    .filter((id): id is number => typeof id === 'number');
+  const txOwners = new Map<number, string | undefined>();
+  if (txIds.length > 0) {
+    const txs = await Transaction.find({ _id: { $in: txIds }, status: 'Active' })
+      .select('_id idTag')
+      .lean<{ _id: number; idTag?: string }[]>();
+    for (const tx of txs) txOwners.set(tx._id, tx.idTag);
+  }
+
+  for (const r of rows) {
+    const holdLive = r.hold?.idTag && r.hold.until && r.hold.until.getTime() > now;
+    const startLive =
+      r.pendingStart?.idTag &&
+      r.pendingStart.at &&
+      r.pendingStart.at.getTime() > now - PENDING_START_STALE_MS;
+    const txOwner =
+      r.currentTransactionId != null && txOwners.has(r.currentTransactionId)
+        ? (txOwners.get(r.currentTransactionId) ?? '')
+        : undefined;
+
+    if (
+      (holdLive && r.hold!.idTag !== idTag) ||
+      (startLive && r.pendingStart!.idTag !== idTag) ||
+      (txOwner !== undefined && txOwner !== idTag)
+    ) {
+      taken.add(r.connectorId);
+    }
+  }
+  return taken;
 }
 
 /** A connector a new session can start on right now. */
@@ -572,7 +737,7 @@ export async function remoteStart(
     // back) — this atomic claim is what actually stops the second scan from
     // also being sent to the station.
     if (!(await claimConnectorForStart(cp._id, connectorId, idTag))) {
-      throw new DriverError(409, 'Өөр хүн энэ холбогчийг дөнгөж эзэллээ. Өөр холбогч сонгоно уу.');
+      throw new DriverError(409, 'Энэ холбогчийг өөр хүн ашиглаж байна. Сул холбогчийн QR кодыг уншуулна уу.');
     }
   } else if (connectors.length > 0) {
     const free = await Promise.all(connectors.map((c) => startable(c, idTag)));
@@ -592,6 +757,13 @@ export async function remoteStart(
     // (by this driver or another) should not have to wait out the claim.
     if (connectorId !== undefined && result.status !== 'Accepted') {
       await releaseConnectorClaim(cp._id, connectorId);
+    }
+    // Their session now marks the gun as taken; the scan hold has done its job.
+    if (connectorId !== undefined && result.status === 'Accepted') {
+      await Connector.updateOne(
+        { chargePointId: cp._id, connectorId, 'hold.idTag': idTag },
+        { $set: { hold: null } },
+      ).catch(() => undefined);
     }
     return result;
   } catch (err) {

@@ -46,6 +46,17 @@ const connectorSchema = new Schema(
       idTag: { type: String },
       at: { type: Date },
     },
+    /**
+     * The driver who scanned this gun's QR sticker and has it open, before
+     * they press start — set by `holdConnector()` in driver/charging.ts and
+     * refreshed by their client while the screen stays open. Anyone else who
+     * scans the same sticker meanwhile is told the gun is in use. Lapses on
+     * its own at `until`, so a closed app never strands the gun.
+     */
+    hold: {
+      idTag: { type: String },
+      until: { type: Date },
+    },
   },
   {
     timestamps: true,
