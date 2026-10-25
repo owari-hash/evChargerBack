@@ -18,7 +18,8 @@
     "qpay:check": "tsx scripts/qpay-check.ts",
     "golomt:check": "tsx scripts/golomt-check.ts",
     "backfill:connector-codes": "tsx scripts/backfill-connector-codes.ts",
-    "cleanup:simulators": "tsx scripts/cleanup-simulators.ts"
+    "cleanup:simulators": "tsx scripts/cleanup-simulators.ts",
+    "test:sms": "tsx scripts/test-sms.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
