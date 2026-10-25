@@ -66,9 +66,20 @@ transactionsRouter.get(
     if (q.idTag) filter.idTag = q.idTag;
     if (q.status) filter.status = q.status;
     if (q.from || q.to) {
+      let fromDate = q.from;
+      let toDate = q.to;
+      if (
+        toDate &&
+        toDate.getUTCHours() === 0 &&
+        toDate.getUTCMinutes() === 0 &&
+        toDate.getUTCSeconds() === 0 &&
+        toDate.getUTCMilliseconds() === 0
+      ) {
+        toDate = new Date(toDate.getTime() + 24 * 60 * 60 * 1000 - 1);
+      }
       filter.startTimestamp = {
-        ...(q.from ? { $gte: q.from } : {}),
-        ...(q.to ? { $lte: q.to } : {}),
+        ...(fromDate ? { $gte: fromDate } : {}),
+        ...(toDate ? { $lte: toDate } : {}),
       };
     }
 
