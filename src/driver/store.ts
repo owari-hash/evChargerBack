@@ -147,7 +147,7 @@ const verificationTokenSchema = new Schema(
 verificationTokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 });
 verificationTokenSchema.index({ userId: 1, kind: 1, usedAt: 1 });
 
-interface DriverUserDoc {
+export interface DriverUserDoc {
   _id: unknown;
   pendingGuides?: string[];
   email?: string;
@@ -186,7 +186,7 @@ interface VerificationTokenDoc {
   updatedAt: Date;
 }
 
-const DriverUser: Model<DriverUserDoc> =
+export const DriverUser: Model<DriverUserDoc> =
   (models.DriverUser as Model<DriverUserDoc>) ??
   model<DriverUserDoc>('DriverUser', driverUserSchema);
 

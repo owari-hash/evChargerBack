@@ -39,6 +39,7 @@ import { reportsRouter } from './routes/reports.routes';
 import { vehicleDetectionsRouter } from './routes/vehicleDetections.routes';
 import { adminNotificationsRouter } from './routes/notifications.routes';
 import { analyticsRouter } from './routes/analytics.routes';
+import { driversRouter } from './routes/drivers.routes';
 
 export function createApp(): Express {
   const app = express();
@@ -157,6 +158,7 @@ export function createApp(): Express {
   api.use('/transactions', transactionsRouter);
   api.use('/meter-values', meterValuesRouter);
   api.use('/id-tags', idTagsRouter);
+  api.use('/drivers', driversRouter);
   api.use('/reservations', reservationsRouter);
   api.use('/charging-profiles', chargingProfilesRouter);
   api.use('/jobs', jobsRouter);
