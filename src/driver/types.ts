@@ -103,6 +103,12 @@ export interface ChargingSession {
   feePercent?: number;
   lastPowerW?: number;
   lastSocPercent?: number;
+  /**
+   * Running sessions only: estimated minutes until the battery is full, from
+   * how fast the station-reported battery % is rising. Absent when the
+   * station does not report battery % or it is too early to tell.
+   */
+  minutesToFull?: number;
   stopReason?: string;
   ebarimt?: EBarimtData;
 }

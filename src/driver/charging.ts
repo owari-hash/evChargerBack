@@ -20,6 +20,7 @@ import { IdTag } from '../models/IdTag';
 import { Transaction } from '../models/Transaction';
 import { connectionManager } from '../ocpp/manager';
 import { issueEBarimtForTransaction } from '../services/ebarimt.service';
+import { estimateMinutesToFull } from './charge-estimate';
 import {
   CONNECTOR_TYPES,
   type ChargingSession,
@@ -408,7 +409,7 @@ export async function listSessionsForIdTag(
       .sort({ startTimestamp: -1 })
       .limit(limit)
       .lean<RawTransaction[]>();
-    return rows.map(toSession);
+    return await Promise.all(rows.map(toSession).map(withEstimate));
   } catch (err) {
     driverLogger.warn({ err, idTag }, 'failed to load transactions');
     return [];
@@ -445,7 +446,19 @@ export async function decorateSessions(sessions: ChargingSession[]): Promise<Cha
 
 export async function getTransaction(id: number): Promise<ChargingSession | null> {
   const tx = await Transaction.findById(id).lean<RawTransaction>();
-  return tx ? toSession(tx) : null;
+  return tx ? withEstimate(toSession(tx)) : null;
+}
+
+/** Adds "minutes to full" to a running session whose station reports battery %. */
+async function withEstimate(session: ChargingSession): Promise<ChargingSession> {
+  if (session.status !== 'Active' || session.lastSocPercent == null) return session;
+  try {
+    const minutesToFull = await estimateMinutesToFull(session.transactionId);
+    return minutesToFull === undefined ? session : { ...session, minutesToFull };
+  } catch (err) {
+    driverLogger.warn({ err, transactionId: session.transactionId }, 'charge estimate failed');
+    return session;
+  }
 }
 
 /** Send to a station, with the failures put the way a driver can act on them. */
