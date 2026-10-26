@@ -77,6 +77,14 @@ export async function ensureDefaultEbarimtMerchant() {
         { districtCode: '23' },
         { $set: { districtCode: '2415' } },
       );
+      // Ensure at least one enabled merchant has isDefault: true
+      const hasDefault = await EbarimtMerchant.exists({ isDefault: true, enabled: true });
+      if (!hasDefault) {
+        const first = (await EbarimtMerchant.findOne({ enabled: true })) || (await EbarimtMerchant.findOne());
+        if (first) {
+          await EbarimtMerchant.updateOne({ _id: first._id }, { $set: { isDefault: true } });
+        }
+      }
     }
   } catch (err: any) {
     console.error('[ebarimt] Error seeding default EbarimtMerchant:', err?.message || err);
