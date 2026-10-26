@@ -7,11 +7,14 @@ import { env } from '../config/env';
 import { sessionSecret } from '../driver/config';
 import { logger } from '../lib/logger';
 import { bus, type CsmsEvent } from './events';
+import { store } from '../driver/store';
 
 interface ClientConnection {
   ws: WebSocket;
   userId?: string;
   role: 'admin' | 'driver' | 'anonymous';
+  /** Identity came from a verified token or session cookie, not the query string. */
+  verified: boolean;
   isAlive: boolean;
 }
 
@@ -54,6 +57,7 @@ export function attachNotificationSocketServer(server: HttpServer | HttpsServer)
     const cookies = parseCookies(req.headers.cookie);
     let userId: string | undefined = parsedUrl.searchParams.get('userId') ?? undefined;
     let role: 'admin' | 'driver' | 'anonymous' = 'anonymous';
+    let verified = false;
 
     // 1. Check Admin token / cookie
     if (token) {
@@ -62,6 +66,7 @@ export function attachNotificationSocketServer(server: HttpServer | HttpsServer)
         if (decoded?.id) {
           userId = decoded.id;
           role = 'admin';
+          verified = true;
         }
       } catch {
         /* invalid token */
@@ -72,6 +77,7 @@ export function attachNotificationSocketServer(server: HttpServer | HttpsServer)
         if (decoded?.id) {
           userId = decoded.id;
           role = 'admin';
+          verified = true;
         }
       } catch {
         /* ignore */
@@ -87,6 +93,7 @@ export function attachNotificationSocketServer(server: HttpServer | HttpsServer)
         if (payload?.sub) {
           userId = payload.sub;
           role = 'driver';
+          verified = true;
         }
       } catch {
         /* ignore */
@@ -102,6 +109,7 @@ export function attachNotificationSocketServer(server: HttpServer | HttpsServer)
         ws,
         userId,
         role,
+        verified,
         isAlive: true,
       };
       clients.add(client);
@@ -147,7 +155,9 @@ export function attachNotificationSocketServer(server: HttpServer | HttpsServer)
 
   // Listen to CSMS bus events and forward relevant events to sockets
   bus.onAny((event: CsmsEvent) => {
-    broadcastLiveEvent(event);
+    void broadcastLiveEvent(event).catch((err) =>
+      logger.warn({ err, event: event.event }, 'failed to forward live event'),
+    );
   });
 
   return wss;
@@ -177,7 +187,36 @@ export function broadcastNotification(
   }
 }
 
-function broadcastLiveEvent(event: CsmsEvent): void {
+/** CSMS events a driver may see about themselves. */
+const DRIVER_EVENTS = new Set<string>([
+  'wallet.credited',
+  'wallet.debited',
+  'transaction.started',
+  'transaction.stopped',
+]);
+
+/**
+ * The signed-in driver a live event is about, or undefined when it is about
+ * no driver. Wallet events carry the owner; charge events only the tag.
+ */
+async function driverFor(event: CsmsEvent): Promise<string | undefined> {
+  if (!DRIVER_EVENTS.has(event.event)) return undefined;
+  const data = (event.data ?? {}) as { ownerType?: string; ownerId?: unknown; idTag?: unknown };
+  if (event.event.startsWith('wallet.')) {
+    return data.ownerType === 'USER' && data.ownerId != null ? String(data.ownerId) : undefined;
+  }
+  if (typeof data.idTag !== 'string' || !data.idTag) return undefined;
+  const user = await store.findUserByIdTag(data.idTag);
+  return user?.id ? String(user.id) : undefined;
+}
+
+/**
+ * Every event goes to signed-in operators. A driver gets only their own
+ * wallet and charge events, and only on a socket opened with their session
+ * cookie: these used to go to every connection, so anyone could read every
+ * driver's balance and charges by opening the socket.
+ */
+async function broadcastLiveEvent(event: CsmsEvent): Promise<void> {
   const payload = JSON.stringify({
     type: 'event',
     event: event.event,
@@ -186,8 +225,14 @@ function broadcastLiveEvent(event: CsmsEvent): void {
     data: event.data,
   });
 
+  const hasDrivers = [...clients].some((c) => c.verified && c.role === 'driver');
+  const driverId = hasDrivers ? await driverFor(event) : undefined;
+
   for (const client of clients) {
-    if (client.ws.readyState !== WebSocket.OPEN) continue;
+    if (client.ws.readyState !== WebSocket.OPEN || !client.verified) continue;
+    const allowed =
+      client.role === 'admin' || (client.role === 'driver' && driverId !== undefined && client.userId === driverId);
+    if (!allowed) continue;
     try {
       client.ws.send(payload);
     } catch {

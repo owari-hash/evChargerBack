@@ -107,6 +107,9 @@ const driverUserSchema = new Schema(
     ebarimtCustomerNo: { type: String, trim: true },
     // No default: documents written before the guides existed stay without it.
     pendingGuides: { type: [String], default: undefined },
+    // Мэдээ ids this driver has dismissed, on any device — so one never pops
+    // up again after a sign-in, a reinstall or on the other phone.
+    seenAnnouncements: { type: [String], default: undefined },
     locale: { type: String, default: 'en' },
     tokenVersion: { type: Number, default: 0 },
     lastLoginAt: { type: Date },
@@ -150,6 +153,7 @@ verificationTokenSchema.index({ userId: 1, kind: 1, usedAt: 1 });
 export interface DriverUserDoc {
   _id: unknown;
   pendingGuides?: string[];
+  seenAnnouncements?: string[];
   email?: string;
   phone?: string;
   name?: string;

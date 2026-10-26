@@ -31,6 +31,8 @@ export interface StationConnector {
   currentTransactionId: number | null;
   lastPowerW?: number;
   lastSocPercent?: number;
+  /** While a car charges on this gun and reports its battery: minutes to full. */
+  minutesToFull?: number;
   statusTimestamp?: string;
   /**
    * Another driver has this gun: they scanned it and have it open, a start

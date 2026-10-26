@@ -6,6 +6,8 @@ import { Announcement } from '../../models/Announcement';
 import { AppRelease, APP_PLATFORMS } from '../../models/AppRelease';
 import { ChargePoint } from '../../models/ChargePoint';
 import { Connector } from '../../models/Connector';
+import { getCurrentUser, requireUser } from '../auth/session';
+import { DriverUser } from '../store';
 import { guard, HOUR, notFound, parseQuery, route } from '../http';
 import { feedbackRoutes } from './feedback';
 
@@ -32,6 +34,17 @@ appRoutes.get(
       .sort({ createdAt: -1 })
       .limit(10)
       .lean();
+
+    // Signed in: say which ones this driver already dismissed anywhere.
+    const user = await getCurrentUser(req).catch(() => null);
+    let seen: Set<string> | undefined;
+    if (user) {
+      const doc = await DriverUser.findById(user.id)
+        .select('seenAnnouncements')
+        .lean<{ seenAnnouncements?: string[] }>();
+      seen = new Set(doc?.seenAnnouncements ?? []);
+    }
+
     return {
       announcements: rows.map((a) => ({
         id: String(a._id),
@@ -39,8 +52,27 @@ appRoutes.get(
         body: a.body,
         imageUrl: a.imageUrl ?? null,
         createdAt: a.createdAt,
+        ...(seen ? { seen: seen.has(String(a._id)) } : {}),
       })),
     };
+  }),
+);
+
+/**
+ * POST /app-api/app/announcements/:id/seen
+ *
+ * The driver has been shown this Мэдээ. Kept on the account, not the device,
+ * so it is not shown again after signing in again or on another phone.
+ */
+appRoutes.post(
+  '/announcements/:id/seen',
+  route(async (req) => {
+    const user = await requireUser(req);
+    const id = String(req.params.id ?? '');
+    if (!/^[a-f\d]{24}$/i.test(id)) throw notFound('Мэдээ олдсонгүй');
+    // One id per Мэдээ ever published, so this stays small.
+    await DriverUser.updateOne({ _id: user.id }, { $addToSet: { seenAnnouncements: id } });
+    return { ok: true };
   }),
 );
 

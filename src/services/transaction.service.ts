@@ -125,7 +125,12 @@ export async function startTransaction(
   if (idTagInfo.status === 'Accepted') {
     await Connector.updateOne(
       { chargePointId: input.chargePointId, connectorId: input.connectorId },
-      { $set: { currentTransactionId: transactionId, lastMeterWh: input.meterStart } },
+      {
+        $set: { currentTransactionId: transactionId, lastMeterWh: input.meterStart },
+        // The previous car's battery and power are not this one's: the app and
+        // site showed them as the new charge's until the station reported.
+        $unset: { lastSocPercent: 1, lastPowerW: 1 },
+      },
       { upsert: false },
     ).catch(() => undefined);
 

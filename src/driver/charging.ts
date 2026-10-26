@@ -358,7 +358,7 @@ export async function listStations(
     })
     .slice(0, query.limit ?? 200);
 
-  return { stations, demo: false };
+  return { stations: await withChargeEstimates(stations), demo: false };
 }
 
 /** A station by either identifier — the ObjectId or the OCPP name. */
@@ -367,7 +367,60 @@ export async function getStation(idOrCpId: string): Promise<Station | null> {
   if (!cp) return null;
   const raw = cp.toObject() as unknown as RawChargePoint;
   const connectors = await Connector.find({ chargePointId: cp._id }).lean<RawConnector[]>();
-  return toStation(raw, connectors, await feePercentForStation(cp));
+  const [station] = await withChargeEstimates([toStation(raw, connectors, await feePercentForStation(cp))]);
+  return station!;
+}
+
+/** Recent "minutes to full" answers, so a list polled every few seconds is not a query per gun each time. */
+const estimateCache = new Map<number, { at: number; minutes: number | undefined }>();
+const ESTIMATE_TTL_MS = 30_000;
+
+async function cachedMinutesToFull(transactionId: number): Promise<number | undefined> {
+  const now = Date.now();
+  const hit = estimateCache.get(transactionId);
+  if (hit && now - hit.at < ESTIMATE_TTL_MS) return hit.minutes;
+  let minutes: number | undefined;
+  try {
+    minutes = await estimateMinutesToFull(transactionId);
+  } catch (err) {
+    driverLogger.warn({ err, transactionId }, 'charge estimate failed');
+  }
+  if (estimateCache.size > 500) estimateCache.clear();
+  estimateCache.set(transactionId, { at: now, minutes });
+  return minutes;
+}
+
+/** A gun with a car on it right now, as opposed to one idle or just finished. */
+function chargingNow(c: StationConnector): boolean {
+  return (
+    c.currentTransactionId != null &&
+    (c.status === 'Charging' || c.status === 'SuspendedEV' || c.status === 'SuspendedEVSE')
+  );
+}
+
+/**
+ * Adds battery-to-full times to the guns charging a car that reports its
+ * battery, so a busy station can say how long until it frees up. A battery
+ * reading left over from a finished charge is dropped rather than shown.
+ */
+async function withChargeEstimates(stations: Station[]): Promise<Station[]> {
+  return Promise.all(
+    stations.map(async (station) => {
+      if (!station.connectors.some((c) => c.lastSocPercent != null || chargingNow(c))) return station;
+      const connectors = await Promise.all(
+        station.connectors.map(async (c) => {
+          if (!chargingNow(c)) {
+            const { lastSocPercent: _stale, ...rest } = c;
+            return rest;
+          }
+          if (c.lastSocPercent == null) return c;
+          const minutesToFull = await cachedMinutesToFull(c.currentTransactionId!);
+          return minutesToFull === undefined ? c : { ...c, minutesToFull };
+        }),
+      );
+      return { ...station, connectors };
+    }),
+  );
 }
 
 // ---------------------------------------------------------------------------
