@@ -271,6 +271,40 @@ export async function resolveMerchantVatPayer(merchant: { _id?: unknown; vatPaye
 }
 
 /**
+ * Resolves the active eBarimt merchant reliably:
+ * 1. Station or client merchant
+ * 2. Default & enabled merchant
+ * 3. Any enabled merchant
+ * 4. Any merchant in DB
+ * Never returns a dummy/hardcoded TIN!
+ */
+export async function getActiveEbarimtMerchant(tx?: TransactionDoc): Promise<any> {
+  if (tx) {
+    const fromTx = await merchantForTransaction(tx).catch(() => null);
+    if (fromTx && fromTx.merchantTin) return fromTx;
+  }
+  // 1. Try default & enabled
+  let merchant = await EbarimtMerchant.findOne({ isDefault: true, enabled: true }).lean().catch(() => null);
+  // 2. Try any enabled merchant
+  if (!merchant || !merchant.merchantTin) {
+    merchant = await EbarimtMerchant.findOne({ enabled: true }).sort({ isDefault: -1, createdAt: -1 }).lean().catch(() => null);
+  }
+  // 3. Try any merchant
+  if (!merchant || !merchant.merchantTin) {
+    merchant = await EbarimtMerchant.findOne().sort({ isDefault: -1, createdAt: -1 }).lean().catch(() => null);
+  }
+  // 4. Ensure default seeding if totally empty
+  if (!merchant || !merchant.merchantTin) {
+    await ensureDefaultEbarimtMerchant();
+    merchant = await EbarimtMerchant.findOne().lean().catch(() => null);
+  }
+  if (!merchant || !merchant.merchantTin) {
+    throw new HttpError(409, 'Е-баримтын мерчант тохируулаагүй байна. Админ системийн И-Баримт цэсээс мерчант бүртгэнэ үү.');
+  }
+  return merchant;
+}
+
+/**
  * Receipt items. With a service fee the energy and the fee are separate lines
  * whose amounts add up exactly to the receipt total.
  */
@@ -346,18 +380,8 @@ export async function issueEBarimtForTransaction(
     }
   }
 
-  // The station's (or its client's) own merchant issues the receipt — the
-  // money is theirs. Only stations with neither use the network default.
-  let activeMerchant = await merchantForTransaction(tx);
-  if (!activeMerchant) {
-    activeMerchant = await EbarimtMerchant.findOne({ isDefault: true, enabled: true }).lean().catch(() => null);
-  }
-  if (!activeMerchant) {
-    await ensureDefaultEbarimtMerchant();
-    activeMerchant = await EbarimtMerchant.findOne({ isDefault: true, enabled: true }).lean().catch(() => null);
-  }
-
-  const merchantTin = activeMerchant?.merchantTin || process.env.EBARIMT_MERCHANT_TIN || '6123456';
+  const activeMerchant = await getActiveEbarimtMerchant(tx);
+  const merchantTin = activeMerchant.merchantTin;
   const isVatPayer = await resolveMerchantVatPayer(activeMerchant);
 
   const finalAmount = tx.cost;
@@ -500,8 +524,8 @@ export async function issueEBarimtForPayment(
   const isB2B = options.type === 'B2B_RECEIPT' || Boolean(options.customerTin);
   const receiptType: 'B2C_RECEIPT' | 'B2B_RECEIPT' = isB2B ? 'B2B_RECEIPT' : 'B2C_RECEIPT';
 
-  const activeMerchant = await EbarimtMerchant.findOne({ isDefault: true, enabled: true }).lean().catch(() => null);
-  const merchantTin = activeMerchant?.merchantTin || process.env.EBARIMT_MERCHANT_TIN || '6123456';
+  const activeMerchant = await getActiveEbarimtMerchant();
+  const merchantTin = activeMerchant.merchantTin;
   const isVatPayer = await resolveMerchantVatPayer(activeMerchant);
 
   const amount = payment.paidAmount || payment.amount;
