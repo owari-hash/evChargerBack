@@ -252,11 +252,29 @@ interface ReceiptLine {
   vat: number;
 }
 
+export async function resolveMerchantVatPayer(merchant: { _id?: unknown; vatPayer?: boolean; merchantTin?: string } | null | undefined): Promise<boolean> {
+  if (merchant && typeof merchant.vatPayer === 'boolean') {
+    return merchant.vatPayer;
+  }
+  const tin = merchant?.merchantTin?.trim();
+  if (!tin) return true;
+  try {
+    const verified = await verifyTaxpayer(tin);
+    if (typeof verified.vatPayer === 'boolean') {
+      if (merchant?._id) {
+        EbarimtMerchant.updateOne({ _id: merchant._id }, { $set: { vatPayer: verified.vatPayer } }).catch(() => {});
+      }
+      return verified.vatPayer;
+    }
+  } catch {}
+  return true;
+}
+
 /**
  * Receipt items. With a service fee the energy and the fee are separate lines
  * whose amounts add up exactly to the receipt total.
  */
-function receiptLines(tx: TransactionDoc, total: number): ReceiptLine[] {
+function receiptLines(tx: TransactionDoc, total: number, isVatPayer: boolean = true): ReceiptLine[] {
   const kwh = (tx.energyWh ?? 0) / 1000 || 1;
   const fee = tx.feeAmount ?? 0;
   if (!(fee > 0) || tx.energyCost == null) {
@@ -267,7 +285,7 @@ function receiptLines(tx: TransactionDoc, total: number): ReceiptLine[] {
         qty: kwh,
         unitPrice: tx.tariffPerKwh ?? 500,
         amount: total,
-        vat: calculateVat(total),
+        vat: isVatPayer ? calculateVat(total) : 0,
       },
     ];
   }
@@ -280,7 +298,7 @@ function receiptLines(tx: TransactionDoc, total: number): ReceiptLine[] {
       qty: kwh,
       unitPrice: tx.tariffPerKwh ?? energy / kwh,
       amount: energy,
-      vat: calculateVat(energy),
+      vat: isVatPayer ? calculateVat(energy) : 0,
     },
     {
       name: `Үйлчилгээний хураамж (${tx.feePercent ?? 0}%)`,
@@ -288,7 +306,7 @@ function receiptLines(tx: TransactionDoc, total: number): ReceiptLine[] {
       qty: 1,
       unitPrice: feeLine,
       amount: feeLine,
-      vat: calculateVat(feeLine),
+      vat: isVatPayer ? calculateVat(feeLine) : 0,
     },
   ];
 }
@@ -318,10 +336,6 @@ export async function issueEBarimtForTransaction(
     throw badRequest('Энэ гүйлгээнд И-Баримт аль хэдийн олгогдсон тул өөрчлөх боломжгүй.');
   }
 
-  const finalAmount = tx.cost;
-  const lines = receiptLines(tx, finalAmount);
-  const totalVAT = Math.round(lines.reduce((sum, l) => sum + l.vat, 0) * 100) / 100;
-
   const isB2B = options.type === 'B2B_RECEIPT' || Boolean(options.customerTin);
   const receiptType: 'B2C_RECEIPT' | 'B2B_RECEIPT' = isB2B ? 'B2B_RECEIPT' : 'B2C_RECEIPT';
 
@@ -344,6 +358,11 @@ export async function issueEBarimtForTransaction(
   }
 
   const merchantTin = activeMerchant?.merchantTin || process.env.EBARIMT_MERCHANT_TIN || '6123456';
+  const isVatPayer = await resolveMerchantVatPayer(activeMerchant);
+
+  const finalAmount = tx.cost;
+  const lines = receiptLines(tx, finalAmount, isVatPayer);
+  const totalVAT = isVatPayer ? Math.round(lines.reduce((sum, l) => sum + l.vat, 0) * 100) / 100 : 0;
   const districtCode = resolveDistrictCode(activeMerchant);
   const isTest = activeMerchant?.envMode === 'TEST';
   const rawUrl = isTest
@@ -478,16 +497,16 @@ export async function issueEBarimtForPayment(
     throw new Error('Payment not found');
   }
 
-  const amount = payment.paidAmount || payment.amount;
-  const finalAmount = Math.max(1, amount);
-  const totalVAT = calculateVat(finalAmount);
-
   const isB2B = options.type === 'B2B_RECEIPT' || Boolean(options.customerTin);
   const receiptType: 'B2C_RECEIPT' | 'B2B_RECEIPT' = isB2B ? 'B2B_RECEIPT' : 'B2C_RECEIPT';
 
   const activeMerchant = await EbarimtMerchant.findOne({ isDefault: true, enabled: true }).lean().catch(() => null);
-
   const merchantTin = activeMerchant?.merchantTin || process.env.EBARIMT_MERCHANT_TIN || '6123456';
+  const isVatPayer = await resolveMerchantVatPayer(activeMerchant);
+
+  const amount = payment.paidAmount || payment.amount;
+  const finalAmount = Math.max(1, amount);
+  const totalVAT = isVatPayer ? calculateVat(finalAmount) : 0;
   const districtCode = resolveDistrictCode(activeMerchant);
   const isTest = activeMerchant?.envMode === 'TEST';
   const rawUrl = isTest
@@ -658,11 +677,25 @@ export async function checkEbarimtMerchant(merchantId: string) {
 
     const isSuccess = res ? (res.ok || (responseData && responseData.configStatus === 'SUCCESS') || res.status < 500) : false;
 
+    // Detect vatPayer from PosAPI /rest/info or central tax authority
+    if (responseData && Array.isArray(responseData.merchants)) {
+      const match = responseData.merchants.find((m: any) => String(m.tin).trim() === String(merchant.merchantTin).trim());
+      if (match && typeof match.vatPayer === 'boolean') {
+        merchant.vatPayer = match.vatPayer;
+      }
+    }
+    if (merchant.vatPayer === undefined) {
+      const taxCheck = await verifyTaxpayer(merchant.merchantTin).catch(() => null);
+      if (taxCheck && typeof taxCheck.vatPayer === 'boolean') {
+        merchant.vatPayer = taxCheck.vatPayer;
+      }
+    }
+
     const checkResult = {
       status: isSuccess ? ('SUCCESS' as const) : ('ERROR' as const),
       statusCode,
       message: isSuccess
-        ? `eBarimt REST Сервис хүлээн авсан (${durationMs}ms) - Merchant TIN: ${merchant.merchantTin}`
+        ? `eBarimt REST Сервис хүлээн авсан (${durationMs}ms) - Merchant TIN: ${merchant.merchantTin} (НӨАТ: ${merchant.vatPayer ? 'Суутгагч' : 'Суутгагч биш'})`
         : `eBarimt Серверт холбогдоход алдаа гарлаа (${statusCode})`,
       checkedAt,
       rawResponse: responseData || {

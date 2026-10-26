@@ -6,6 +6,7 @@ const ebarimtMerchantSchema = new Schema(
     merchantTin: { type: String, required: true, index: true }, // ААН-ийн Регистрийн дугаар
     districtCode: { type: String, default: '2415' }, // Дүүргийн 4 оронтой код (жишээ: 2415)
     khorooCode: { type: String, default: '1' }, // Хорооны код / дугаар
+    vatPayer: { type: Boolean, default: true }, // НӨАТ суутган төлөгч эсэх
     
     // Server Environment Options
     envMode: { type: String, enum: ['PRODUCTION', 'TEST'], default: 'PRODUCTION' },
