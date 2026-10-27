@@ -181,21 +181,24 @@ driversRouter.get(
   '/:id',
   asyncHandler(async (req, res) => {
     const { id } = req.params;
-    if (!Types.ObjectId.isValid(id)) throw notFound(`Жолооч олдсонгүй: ${id}`);
-
-    const driver = await DriverUser.findById(id).lean<DriverUserDoc>();
+    let driver = Types.ObjectId.isValid(id) ? await DriverUser.findById(id).lean<DriverUserDoc>() : null;
+    if (!driver) {
+      driver = await DriverUser.findOne({ phone: id }).lean<DriverUserDoc>();
+    }
     if (!driver) throw notFound(`Жолооч олдсонгүй: ${id}`);
+
+    const driverId = String(driver._id);
 
     // Fetch or initialize wallet
     const wallet = await getOrCreateWallet(
-      { ownerType: 'USER', ownerId: id },
+      { ownerType: 'USER', ownerId: driverId },
       { label: driver.name ?? driver.phone },
     );
 
     // Fetch all RFID tags for this driver
     const rfidCards = await IdTag.find({
       $or: [
-        { walletOwnerType: 'USER', walletOwnerId: id },
+        { walletOwnerType: 'USER', walletOwnerId: driverId },
         ...(driver.idTag ? [{ _id: driver.idTag }] : []),
         ...(driver.phone ? [{ ownerPhone: driver.phone }] : []),
       ],
@@ -468,8 +471,48 @@ driversRouter.patch(
     const { id } = req.params;
     const body = req.body as z.infer<typeof updateDriverSchema>;
 
-    const driver = await DriverUser.findById(id);
-    if (!driver) throw notFound(`Жолооч олдсонгүй: ${id}`);
+    let driver = Types.ObjectId.isValid(id) ? await DriverUser.findById(id) : null;
+    if (!driver && body.phone) {
+      driver = await DriverUser.findOne({ phone: body.phone });
+    }
+
+    if (!driver) {
+      if (!body.phone) {
+        throw notFound(`Жолооч олдсонгүй: ${id}`);
+      }
+      // If driver was not in DB previously, create and save them directly into DB!
+      let pinHash: string | undefined;
+      let passwordHash: string | undefined;
+      if (body.password) {
+        pinHash = await hashPin(body.password);
+        passwordHash = await hashPassword(body.password);
+      }
+      const cleanTag = body.idTag?.trim() || undefined;
+      driver = new DriverUser({
+        ...(Types.ObjectId.isValid(id) ? { _id: new Types.ObjectId(id) } : {}),
+        phone: body.phone,
+        name: body.name?.trim() || undefined,
+        email: body.email?.trim()?.toLowerCase() || undefined,
+        pinHash,
+        passwordHash,
+        vehicleBrand: body.vehicleBrand?.trim() || undefined,
+        vehicleModel: body.vehicleModel?.trim() || undefined,
+        ebarimtCustomerNo: body.ebarimtCustomerNo?.trim() || undefined,
+        isInternal: body.isInternal ?? false,
+        idTag: cleanTag,
+        isActive: body.isActive ?? true,
+        locale: 'mn',
+      });
+      await driver.save();
+    }
+
+    const driverId = String(driver._id);
+
+    // Ensure wallet is created/active for this driver
+    await getOrCreateWallet(
+      { ownerType: 'USER', ownerId: driverId },
+      { label: driver.name ?? driver.phone },
+    );
 
     if (body.phone && body.phone !== driver.phone) {
       const clash = await DriverUser.findOne({ phone: body.phone, _id: { $ne: driver._id } });
@@ -516,7 +559,7 @@ driversRouter.patch(
           ownerEmail: driver.email || undefined,
           isInternal: body.isInternal ?? driver.isInternal,
           walletOwnerType: 'USER',
-          walletOwnerId: id,
+          walletOwnerId: driverId,
           ...(body.tagExpiryDate ? { expiryDate: new Date(body.tagExpiryDate) } : {}),
         };
         if (body.allowedChargePointIds !== undefined) {
@@ -532,12 +575,12 @@ driversRouter.patch(
           },
           { upsert: true, new: true },
         );
-        await bindIdTagToWallet(tag, { ownerType: 'USER', ownerId: id });
+        await bindIdTagToWallet(tag, { ownerType: 'USER', ownerId: driverId });
       }
     }
 
     await driver.save();
-    res.json({ ok: true, id });
+    res.json({ ok: true, id: driverId });
   }),
 );
 
