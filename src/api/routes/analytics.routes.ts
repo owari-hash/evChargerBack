@@ -18,6 +18,10 @@ analyticsRouter.get(
   requireAuth,
   validate(overviewQuery, 'query'),
   asyncHandler(async (req, res) => {
+    if (req.user?.role === 'CLIENT') {
+      res.status(403).json({ error: 'Зөвшөөрөлгүй' });
+      return;
+    }
     const q = req.query as unknown as z.infer<typeof overviewQuery>;
     const overview = await getAnalyticsOverview(q.days);
     res.json(overview);
