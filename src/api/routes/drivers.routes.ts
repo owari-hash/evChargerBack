@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { Types } from 'mongoose';
-import { DriverUser, type DriverUserDoc } from '../../driver/store';
+import { DriverUser, getPhoneVariants, type DriverUserDoc } from '../../driver/store';
 import { ChargePoint } from '../../models/ChargePoint';
 import { IdTag } from '../../models/IdTag';
 import { Transaction } from '../../models/Transaction';
@@ -183,7 +183,8 @@ driversRouter.get(
     const { id } = req.params;
     let driver = Types.ObjectId.isValid(id) ? await DriverUser.findById(id).lean<DriverUserDoc>() : null;
     if (!driver) {
-      driver = await DriverUser.findOne({ phone: id }).lean<DriverUserDoc>();
+      const variants = getPhoneVariants(id);
+      driver = await DriverUser.findOne({ phone: { $in: variants } }).lean<DriverUserDoc>();
     }
     if (!driver) throw notFound(`Жолооч олдсонгүй: ${id}`);
 
@@ -353,7 +354,8 @@ driversRouter.post(
   asyncHandler(async (req, res) => {
     const body = req.body as z.infer<typeof createDriverSchema>;
 
-    const existing = await DriverUser.findOne({ phone: body.phone });
+    const phoneVariants = getPhoneVariants(body.phone);
+    const existing = await DriverUser.findOne({ phone: { $in: phoneVariants } });
     if (existing) {
       throw conflict(`Энэ утасны дугаартай жолооч аль хэдийн бүртгэгдсэн байна: ${body.phone}`);
     }
@@ -473,7 +475,8 @@ driversRouter.patch(
 
     let driver = Types.ObjectId.isValid(id) ? await DriverUser.findById(id) : null;
     if (!driver && body.phone) {
-      driver = await DriverUser.findOne({ phone: body.phone });
+      const phoneVariants = getPhoneVariants(body.phone);
+      driver = await DriverUser.findOne({ phone: { $in: phoneVariants } });
     }
 
     if (!driver) {
@@ -515,7 +518,8 @@ driversRouter.patch(
     );
 
     if (body.phone && body.phone !== driver.phone) {
-      const clash = await DriverUser.findOne({ phone: body.phone, _id: { $ne: driver._id } });
+      const phoneVariants = getPhoneVariants(body.phone);
+      const clash = await DriverUser.findOne({ phone: { $in: phoneVariants }, _id: { $ne: driver._id } });
       if (clash) throw conflict(`Утасны дугаар давхардлаа: ${body.phone}`);
       driver.phone = body.phone;
     }

@@ -298,6 +298,16 @@ async function ready(): Promise<void> {
   await indexesReady;
 }
 
+export function getPhoneVariants(phone?: string | null): string[] {
+  if (!phone) return [];
+  const clean = String(phone).trim().replace(/[\s\-()]/g, '');
+  if (!clean) return [];
+  const bare = clean.replace(/^\+?976/, '');
+  const e164 = `+976${bare}`;
+  const with976 = `976${bare}`;
+  return Array.from(new Set([clean, bare, e164, with976])).filter(Boolean);
+}
+
 export const store = {
   async findUserById(id: string): Promise<StoredUser | null> {
     await ready();
@@ -314,7 +324,8 @@ export const store = {
 
   async findUserByPhone(phone: string): Promise<StoredUser | null> {
     await ready();
-    const doc = await DriverUser.findOne({ phone }).lean<DriverUserDoc>();
+    const variants = getPhoneVariants(phone);
+    const doc = await DriverUser.findOne({ phone: { $in: variants } }).lean<DriverUserDoc>();
     return doc ? toUser(doc) : null;
   },
 
