@@ -313,3 +313,15 @@ paymentsRouter.post(
     res.json(await reconcilePendingPayments((req.body as { limit?: number }).limit ?? 50));
   }),
 );
+
+paymentsRouter.delete(
+  '/:id',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const payment = await Payment.findByIdAndDelete(id);
+    if (!payment) throw notFound('Payment not found');
+    res.json({ ok: true, id });
+  }),
+);
+
