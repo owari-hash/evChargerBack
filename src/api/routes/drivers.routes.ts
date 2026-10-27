@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { Types } from 'mongoose';
 import { DriverUser, type DriverUserDoc } from '../../driver/store';
+import { ChargePoint } from '../../models/ChargePoint';
 import { IdTag } from '../../models/IdTag';
 import { Transaction } from '../../models/Transaction';
 import { Wallet, type WalletDoc } from '../../models/Wallet';
@@ -268,6 +269,7 @@ driversRouter.get(
         expiryDate: c.expiryDate,
         isInternal: c.isInternal,
         isPrimary: c._id === driver.idTag,
+        allowedChargePointIds: c.allowedChargePointIds?.map((id: any) => String(id)) ?? [],
         createdAt: c.createdAt,
       })),
       stats,
@@ -286,6 +288,40 @@ driversRouter.get(
     });
   }),
 );
+
+/**
+ * Resolves station identifiers (ObjectId hex, cpId, name, or sitePath)
+ * into real ChargePoint._id ObjectIds for IdTag.allowedChargePointIds.
+ * Silently drops unmatched or invalid strings to prevent Mongoose CastErrors.
+ */
+async function resolveAllowedStationObjectIds(
+  inputs?: string[],
+): Promise<Types.ObjectId[] | undefined> {
+  if (!inputs || !Array.isArray(inputs) || inputs.length === 0) return undefined;
+  const result: Types.ObjectId[] = [];
+  for (const raw of inputs) {
+    const val = String(raw).trim();
+    if (!val) continue;
+
+    if (Types.ObjectId.isValid(val) && /^[0-9a-fA-F]{24}$/.test(val)) {
+      const oid = new Types.ObjectId(val);
+      const exists = await ChargePoint.exists({ _id: oid });
+      if (exists) {
+        if (!result.some((r) => r.equals(oid))) result.push(oid);
+        continue;
+      }
+    }
+
+    const cp = await ChargePoint.findOne({
+      $or: [{ cpId: val }, { name: val }, { sitePath: val }],
+    }).select('_id');
+
+    if (cp) {
+      if (!result.some((r) => r.equals(cp._id))) result.push(cp._id);
+    }
+  }
+  return result;
+}
 
 const createDriverSchema = z.object({
   phone: z.string().trim().min(8, 'Утасны дугаар дутуу байна'),
@@ -373,21 +409,24 @@ driversRouter.post(
 
     // Register / Bind RFID tag if provided
     if (cleanTag) {
-      const allowedCps = body.allowedChargePointIds?.length ? body.allowedChargePointIds : undefined;
+      const allowedCps = await resolveAllowedStationObjectIds(body.allowedChargePointIds);
+      const updateDoc: Record<string, unknown> = {
+        status: body.tagStatus || 'Accepted',
+        ownerName: body.name?.trim() || undefined,
+        ownerPhone: body.phone,
+        ownerEmail: body.email?.trim() || undefined,
+        isInternal: body.isInternal,
+        walletOwnerType: 'USER',
+        walletOwnerId: driverId,
+        ...(body.tagExpiryDate ? { expiryDate: new Date(body.tagExpiryDate) } : {}),
+      };
+      if (body.allowedChargePointIds !== undefined) {
+        updateDoc.allowedChargePointIds = allowedCps ?? [];
+      }
       await IdTag.findOneAndUpdate(
         { _id: cleanTag },
         {
-          $set: {
-            status: body.tagStatus || 'Accepted',
-            ownerName: body.name?.trim() || undefined,
-            ownerPhone: body.phone,
-            ownerEmail: body.email?.trim() || undefined,
-            isInternal: body.isInternal,
-            walletOwnerType: 'USER',
-            walletOwnerId: driverId,
-            ...(body.tagExpiryDate ? { expiryDate: new Date(body.tagExpiryDate) } : {}),
-            ...(allowedCps ? { allowedChargePointIds: allowedCps } : {}),
-          },
+          $set: updateDoc,
           $setOnInsert: {
             maxActiveTransactions: 1,
           },
@@ -469,21 +508,24 @@ driversRouter.patch(
         await unbindIdTagFromWallet(oldTag).catch(() => undefined);
       }
       if (tag) {
-        const allowedCps = body.allowedChargePointIds?.length ? body.allowedChargePointIds : undefined;
+        const allowedCps = await resolveAllowedStationObjectIds(body.allowedChargePointIds);
+        const updateDoc: Record<string, unknown> = {
+          status: body.tagStatus || 'Accepted',
+          ownerName: driver.name || undefined,
+          ownerPhone: driver.phone,
+          ownerEmail: driver.email || undefined,
+          isInternal: body.isInternal ?? driver.isInternal,
+          walletOwnerType: 'USER',
+          walletOwnerId: id,
+          ...(body.tagExpiryDate ? { expiryDate: new Date(body.tagExpiryDate) } : {}),
+        };
+        if (body.allowedChargePointIds !== undefined) {
+          updateDoc.allowedChargePointIds = allowedCps ?? [];
+        }
         await IdTag.findOneAndUpdate(
           { _id: tag },
           {
-            $set: {
-              status: body.tagStatus || 'Accepted',
-              ownerName: driver.name || undefined,
-              ownerPhone: driver.phone,
-              ownerEmail: driver.email || undefined,
-              isInternal: body.isInternal ?? driver.isInternal,
-              walletOwnerType: 'USER',
-              walletOwnerId: id,
-              ...(body.tagExpiryDate ? { expiryDate: new Date(body.tagExpiryDate) } : {}),
-              ...(allowedCps ? { allowedChargePointIds: allowedCps } : {}),
-            },
+            $set: updateDoc,
             $setOnInsert: {
               maxActiveTransactions: 1,
             },
