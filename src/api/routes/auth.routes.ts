@@ -144,7 +144,7 @@ authRouter.get(
 const updateUserSchema = z.object({
   name: z.string().optional(),
   role: z.enum(USER_ROLES).optional(),
-  clientId: z.string().optional().nullable(),
+  clientId: z.union([z.string(), z.record(z.any())]).optional().nullable(),
   allowedMenus: z.array(z.string()).optional().nullable(),
   isActive: z.boolean().optional(),
   password: z.string().min(6).optional(),
@@ -160,7 +160,16 @@ authRouter.patch(
     const update: Record<string, unknown> = {};
     if (body.name !== undefined) update.name = body.name;
     if (body.role !== undefined) update.role = body.role;
-    if (body.clientId !== undefined) update.clientId = body.clientId || null;
+    if (body.clientId !== undefined) {
+      let cid: string | null = null;
+      if (typeof body.clientId === 'string') {
+        const trimmed = body.clientId.trim();
+        cid = trimmed && trimmed !== '[object Object]' ? trimmed : null;
+      } else if (body.clientId && typeof body.clientId === 'object') {
+        cid = (body.clientId as any)._id || (body.clientId as any).id || null;
+      }
+      update.clientId = cid;
+    }
     if (body.allowedMenus !== undefined) {
       update.allowedMenus = body.allowedMenus && body.allowedMenus.length > 0 ? body.allowedMenus : [];
     }
