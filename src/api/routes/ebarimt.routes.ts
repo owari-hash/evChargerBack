@@ -179,3 +179,29 @@ ebarimtRouter.get(
     res.json(row);
   }),
 );
+
+/**
+ * DELETE /ebarimt/:id
+ * Remove e-barimt record from system (ADMIN only).
+ */
+ebarimtRouter.delete(
+  '/:id',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const rawId = req.params.id;
+    let deleted = false;
+    if (rawId.startsWith('tx_') || /^\d+$/.test(rawId)) {
+      const txId = Number(rawId.replace(/^tx_/, ''));
+      const tx = await Transaction.findByIdAndUpdate(txId, { $unset: { ebarimt: 1 } });
+      if (tx) deleted = true;
+    }
+    if (!deleted) {
+      const payId = rawId.replace(/^pay_/, '');
+      const pay = await Payment.findByIdAndUpdate(payId, { $unset: { ebarimt: 1 } }).catch(() => null);
+      if (pay) deleted = true;
+    }
+    if (!deleted) throw notFound('И-баримт олдсонгүй');
+    res.json({ ok: true, id: rawId });
+  }),
+);
+
