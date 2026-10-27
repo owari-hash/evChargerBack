@@ -209,11 +209,13 @@ paymentsRouter.get(
     }
 
     const { skip, limit } = paginate(q);
+    const summaryFilter = { ...filter };
+    delete summaryFilter.status;
     const [data, total, totals] = await Promise.all([
       Payment.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       Payment.countDocuments(filter),
       Payment.aggregate<{ _id: string; count: number; amount: number }>([
-        { $match: filter },
+        { $match: summaryFilter },
         { $group: { _id: '$status', count: { $sum: 1 }, amount: { $sum: '$paidAmount' } } },
       ]),
     ]);
