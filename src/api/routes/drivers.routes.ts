@@ -529,3 +529,33 @@ driversRouter.post(
     res.json({ ok: true, balance: resEntry.balance });
   }),
 );
+
+/**
+ * DELETE /api/drivers/:id
+ * Delete a driver user and unbind associated RFID tags.
+ */
+driversRouter.delete(
+  '/:id',
+  requireOperator,
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const driver = await DriverUser.findById(id);
+    if (!driver) throw notFound(`Жолооч олдсонгүй: ${id}`);
+
+    // Unbind any IdTags associated with this driver
+    await IdTag.updateMany(
+      { walletOwnerType: 'USER', walletOwnerId: id },
+      { $unset: { walletOwnerType: 1, walletOwnerId: 1, ownerPhone: 1, ownerName: 1 } },
+    );
+    if (driver.idTag) {
+      await IdTag.updateOne(
+        { _id: driver.idTag },
+        { $unset: { walletOwnerType: 1, walletOwnerId: 1, ownerPhone: 1, ownerName: 1 } },
+      );
+    }
+
+    await DriverUser.findByIdAndDelete(id);
+    res.json({ ok: true, id });
+  }),
+);
+
