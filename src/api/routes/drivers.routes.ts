@@ -148,7 +148,27 @@ driversRouter.get(
       };
     });
 
-    res.json({ data, total, page: q.page, limit: q.limit });
+    const [walletAgg, txTotalAgg] = await Promise.all([
+      Wallet.aggregate([
+        { $match: { ownerType: 'USER' } },
+        { $group: { _id: null, totalBalance: { $sum: '$balance' } } },
+      ]),
+      Transaction.countDocuments(),
+    ]);
+
+    const overallBalance = walletAgg[0]?.totalBalance ?? 0;
+    const overallSessions = txTotalAgg;
+
+    res.json({
+      data,
+      total,
+      page: q.page,
+      limit: q.limit,
+      summary: {
+        totalBalance: overallBalance,
+        totalSessions: overallSessions,
+      },
+    });
   }),
 );
 
