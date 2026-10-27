@@ -21,6 +21,8 @@ import {
   getOrCreateWallet,
   unbindIdTagFromWallet,
 } from '../../services/wallet.service';
+import { hashPin } from '../../driver/auth/pin';
+import { hashPassword } from '../../models/User';
 
 export const driversRouter = Router();
 driversRouter.use(requireAuth);
@@ -269,12 +271,16 @@ const createDriverSchema = z.object({
   phone: z.string().trim().min(8, 'Утасны дугаар дутуу байна'),
   name: z.string().trim().optional(),
   email: z.string().email('Имэйл хаяг буруу байна').optional().or(z.literal('')),
+  password: z.string().trim().min(4, 'Нууц үг хамгийн багадаа 4 орон байна').optional().or(z.literal('')),
   vehicleBrand: z.string().trim().optional(),
   vehicleModel: z.string().trim().optional(),
   ebarimtCustomerNo: z.string().trim().optional(),
   isInternal: z.boolean().default(false),
   initialBalance: z.number().min(0).optional(),
-  idTag: z.string().trim().optional(),
+  idTag: z.string().trim().optional().or(z.literal('')),
+  tagStatus: z.enum(['Accepted', 'Blocked', 'Expired']).optional(),
+  tagExpiryDate: z.string().optional(),
+  allowedChargePointIds: z.array(z.string()).optional(),
 });
 
 /**
@@ -300,15 +306,26 @@ driversRouter.post(
       }
     }
 
+    let pinHash: string | undefined;
+    let passwordHash: string | undefined;
+    if (body.password) {
+      pinHash = await hashPin(body.password);
+      passwordHash = await hashPassword(body.password);
+    }
+
+    const cleanTag = body.idTag?.trim() || undefined;
+
     const doc = await DriverUser.create({
       phone: body.phone,
       name: body.name?.trim() || undefined,
       email: body.email?.trim()?.toLowerCase() || undefined,
+      pinHash,
+      passwordHash,
       vehicleBrand: body.vehicleBrand?.trim() || undefined,
       vehicleModel: body.vehicleModel?.trim() || undefined,
       ebarimtCustomerNo: body.ebarimtCustomerNo?.trim() || undefined,
       isInternal: body.isInternal,
-      idTag: body.idTag?.trim() || undefined,
+      idTag: cleanTag,
       isActive: true,
       locale: 'mn',
     });
@@ -334,20 +351,30 @@ driversRouter.post(
       );
     }
 
-    // Bind RFID tag if provided
-    if (body.idTag) {
-      await bindIdTagToWallet(body.idTag, { ownerType: 'USER', ownerId: driverId });
-      await IdTag.updateOne(
-        { _id: body.idTag },
+    // Register / Bind RFID tag if provided
+    if (cleanTag) {
+      const allowedCps = body.allowedChargePointIds?.length ? body.allowedChargePointIds : undefined;
+      await IdTag.findOneAndUpdate(
+        { _id: cleanTag },
         {
           $set: {
-            ownerName: body.name || undefined,
+            status: body.tagStatus || 'Accepted',
+            ownerName: body.name?.trim() || undefined,
             ownerPhone: body.phone,
-            ownerEmail: body.email || undefined,
+            ownerEmail: body.email?.trim() || undefined,
             isInternal: body.isInternal,
+            walletOwnerType: 'USER',
+            walletOwnerId: driverId,
+            ...(body.tagExpiryDate ? { expiryDate: new Date(body.tagExpiryDate) } : {}),
+            ...(allowedCps ? { allowedChargePointIds: allowedCps } : {}),
+          },
+          $setOnInsert: {
+            maxActiveTransactions: 1,
           },
         },
+        { upsert: true, new: true },
       );
+      await bindIdTagToWallet(cleanTag, { ownerType: 'USER', ownerId: driverId });
     }
 
     res.status(201).json({ id: driverId });
@@ -358,12 +385,16 @@ const updateDriverSchema = z.object({
   name: z.string().trim().optional(),
   phone: z.string().trim().min(8).optional(),
   email: z.string().email().optional().or(z.literal('')),
+  password: z.string().trim().min(4, 'Нууц үг хамгийн багадаа 4 орон байна').optional().or(z.literal('')),
   vehicleBrand: z.string().trim().optional(),
   vehicleModel: z.string().trim().optional(),
   ebarimtCustomerNo: z.string().trim().optional(),
   isInternal: z.boolean().optional(),
   isActive: z.boolean().optional(),
   idTag: z.string().trim().optional().or(z.literal('')),
+  tagStatus: z.enum(['Accepted', 'Blocked', 'Expired']).optional(),
+  tagExpiryDate: z.string().optional(),
+  allowedChargePointIds: z.array(z.string()).optional(),
 });
 
 /**
@@ -396,6 +427,13 @@ driversRouter.patch(
       driver.email = em;
     }
 
+    if (body.password) {
+      driver.pinHash = await hashPin(body.password);
+      driver.passwordHash = await hashPassword(body.password);
+      driver.failedPinAttempts = 0;
+      driver.pinLockedUntil = undefined as any;
+    }
+
     if (body.name !== undefined) driver.name = body.name?.trim() || undefined;
     if (body.vehicleBrand !== undefined) driver.vehicleBrand = body.vehicleBrand?.trim() || undefined;
     if (body.vehicleModel !== undefined) driver.vehicleModel = body.vehicleModel?.trim() || undefined;
@@ -405,8 +443,33 @@ driversRouter.patch(
 
     if (body.idTag !== undefined) {
       const tag = body.idTag?.trim() || undefined;
+      const oldTag = driver.idTag;
       driver.idTag = tag;
+      if (oldTag && oldTag !== tag) {
+        await unbindIdTagFromWallet(oldTag).catch(() => undefined);
+      }
       if (tag) {
+        const allowedCps = body.allowedChargePointIds?.length ? body.allowedChargePointIds : undefined;
+        await IdTag.findOneAndUpdate(
+          { _id: tag },
+          {
+            $set: {
+              status: body.tagStatus || 'Accepted',
+              ownerName: driver.name || undefined,
+              ownerPhone: driver.phone,
+              ownerEmail: driver.email || undefined,
+              isInternal: body.isInternal ?? driver.isInternal,
+              walletOwnerType: 'USER',
+              walletOwnerId: id,
+              ...(body.tagExpiryDate ? { expiryDate: new Date(body.tagExpiryDate) } : {}),
+              ...(allowedCps ? { allowedChargePointIds: allowedCps } : {}),
+            },
+            $setOnInsert: {
+              maxActiveTransactions: 1,
+            },
+          },
+          { upsert: true, new: true },
+        );
         await bindIdTagToWallet(tag, { ownerType: 'USER', ownerId: id });
       }
     }
