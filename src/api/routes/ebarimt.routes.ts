@@ -4,6 +4,7 @@ import {
   asyncHandler,
   paginationSchema,
   requireAuth,
+  requireAdmin,
   requireOperator,
   validate,
 } from '../middleware';
