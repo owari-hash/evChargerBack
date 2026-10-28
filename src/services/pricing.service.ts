@@ -25,25 +25,45 @@ export interface TariffZone {
   name?: string;
   /** Minutes since local midnight, inclusive. */
   startMinute: number;
-  /** Minutes since local midnight, exclusive. Always > startMinute — a zone
-   *  spanning midnight is two entries, not one that wraps. */
+  /**
+   * Minutes since local midnight, exclusive.
+   * When endMinute < startMinute, the zone spans across midnight (e.g. 22:00 -> 06:00).
+   */
   endMinute: number;
   tariffPerKwh: number;
+}
+
+/**
+ * Decomposes any zone spanning midnight (startMinute > endMinute, e.g. 22:00 -> 06:00)
+ * into standard within-day segments [startMinute, 1440) and [0, endMinute).
+ * Regular zones [startMinute, endMinute) remain unchanged.
+ */
+export function expandTariffZones(zones: TariffZone[]): TariffZone[] {
+  const expanded: TariffZone[] = [];
+  for (const z of zones) {
+    if (z.startMinute > z.endMinute) {
+      expanded.push({ ...z, startMinute: z.startMinute, endMinute: 1440 });
+      expanded.push({ ...z, startMinute: 0, endMinute: z.endMinute });
+    } else {
+      expanded.push(z);
+    }
+  }
+  return expanded;
 }
 
 /** Rejects any zone set that is malformed or has two zones covering the same minute. */
 export function validateTariffZones(zones: TariffZone[]): string | null {
   for (const z of zones) {
     if (!(z.startMinute >= 0 && z.startMinute < 1440)) return 'Эхлэх цаг буруу байна';
-    if (!(z.endMinute > z.startMinute && z.endMinute <= 1440)) {
-      return 'Дуусах цаг эхлэх цагаас хойш байх ёстой (нэг өдрийн дотор)';
-    }
+    if (!(z.endMinute > 0 && z.endMinute <= 1440)) return 'Дуусах цаг буруу байна';
+    if (z.startMinute === z.endMinute) return 'Эхлэх болон дуусах цаг ижил байж болохгүй';
     if (!(z.tariffPerKwh >= 0)) return 'Тариф сөрөг байж болохгүй';
   }
-  const sorted = [...zones].sort((a, b) => a.startMinute - b.startMinute);
+  const expanded = expandTariffZones(zones);
+  const sorted = [...expanded].sort((a, b) => a.startMinute - b.startMinute);
   for (let i = 1; i < sorted.length; i++) {
     if (sorted[i].startMinute < sorted[i - 1].endMinute) {
-      return 'Цагийн бүсүүд давхцаж болохгүй';
+      return `"${sorted[i - 1].name || 'Цагийн бүс'}" болон "${sorted[i].name || 'Цагийн бүс'}" цагийн бүсүүд давхцаж байна`;
     }
   }
   return null;
@@ -61,13 +81,18 @@ function localMidnightUtc(date: Date): Date {
   return new Date(localMidnightShifted - MN_OFFSET_MINUTES * 60_000);
 }
 
-/** The zone covering `at`, if any. */
+/** The zone covering `at`, if any. Handles wrapping overnight zones cleanly. */
 export function activeTariffZone(
   zones: TariffZone[] | null | undefined,
   at: Date,
 ): TariffZone | undefined {
+  if (!zones || zones.length === 0) return undefined;
   const minute = minuteOfDay(at);
-  return (zones ?? []).find((z) => minute >= z.startMinute && minute < z.endMinute);
+  return zones.find((z) =>
+    z.startMinute < z.endMinute
+      ? minute >= z.startMinute && minute < z.endMinute
+      : minute >= z.startMinute || minute < z.endMinute
+  );
 }
 
 /** The zone covering `at`, or `fallback` (the station's flat rate) outside all of them. */
@@ -149,9 +174,10 @@ export function sessionCost(
  */
 function tariffBoundaries(start: Date, stop: Date, zones: TariffZone[]): number[] {
   const boundaries = new Set<number>([start.getTime(), stop.getTime()]);
+  const expanded = expandTariffZones(zones);
   let day = localMidnightUtc(start);
   while (day.getTime() < stop.getTime()) {
-    for (const zone of zones) {
+    for (const zone of expanded) {
       for (const minute of [zone.startMinute, zone.endMinute]) {
         const instant = day.getTime() + minute * 60_000;
         if (instant > start.getTime() && instant < stop.getTime()) boundaries.add(instant);
