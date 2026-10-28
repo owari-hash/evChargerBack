@@ -432,26 +432,29 @@ const topUpSchema = z.object({
     .positive('Дүн 0-ээс их байх ёстой'),
   /**
    * `qpay` (default) returns a QR; `card` returns Golomt's `paymentUrl`;
-   * `saved_card` charges `cardId` at once and returns the settled payment.
+   * `saved_card` charges `cardId` at once and returns the settled payment;
+   * `toki` uses TokiPay (QR / phone push / deeplink).
    */
-  method: z.enum(['qpay', 'card', 'saved_card', 'socialpay']).default('qpay'),
+  method: z.enum(['qpay', 'card', 'saved_card', 'socialpay', 'toki']).default('qpay'),
   saveCard: z.boolean().optional(),
   cardId: z.string().regex(/^[a-f0-9]{24}$/i, 'Карт олдсонгүй').optional(),
+  tokiMethod: z.enum(['QR', 'PHONE', 'DEEPLINK']).optional(),
+  tokiPhoneNo: z.string().optional(),
 });
 
 /**
- * Opens a QPay invoice and returns the QR. No money moves here — the balance
- * changes only once QPay confirms, which `GET /wallet/topup/:id` polls for.
+ * Opens a QPay/Toki invoice and returns the QR. No money moves here — the balance
+ * changes only once the provider confirms, which `GET /wallet/topup/:id` polls for.
  */
 walletRoutes.post(
   '/topup',
   route(async (req) => {
     const user = await requireUser(req);
-    // Every unpaid invoice costs a QPay request; keep one driver from opening dozens.
+    // Every unpaid invoice costs a provider request; keep one driver from opening dozens.
     guard(req, 'wallet-topup', 12, 10 * MINUTE);
     guard(req, 'wallet-topup-hourly', 40, HOUR);
 
-    const { amount, method, saveCard, cardId } = parseBody(req, topUpSchema);
+    const { amount, method, saveCard, cardId, tokiMethod, tokiPhoneNo } = parseBody(req, topUpSchema);
     const config = walletConfig();
     const methodEnabled =
       method === 'card'
@@ -460,6 +463,8 @@ walletRoutes.post(
           ? config.socialPayEnabled
           : method === 'saved_card'
           ? config.savedCardsEnabled
+          : method === 'toki'
+          ? config.tokiEnabled
           : config.topUpEnabled;
     if (method === 'saved_card') {
       if (!cardId) throw badRequest('Картаа сонгоно уу', { cardId: 'Картаа сонгоно уу' });
@@ -487,6 +492,8 @@ walletRoutes.post(
       method,
       saveCard,
       cardId,
+      tokiMethod,
+      tokiPhoneNo,
     });
 
     // No QR — the client sends the driver to `paymentUrl` (or the deeplink).

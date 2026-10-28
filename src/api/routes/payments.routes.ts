@@ -14,6 +14,7 @@ import {
   cancelPayment,
   createPayment,
   handleCallback,
+  handleTokiCallback,
   reconcilePendingPayments,
   refundPayment,
   syncPayment,
@@ -61,6 +62,23 @@ paymentsRouter.all('/callback/:token/:paymentId/:secret', callbackLimiter, callb
 paymentsRouter.all('/callback/:paymentId/:secret', callbackLimiter, callbackHandler);
 
 // ---------------------------------------------------------------------------
+// Toki callback — unauthenticated by design, verified by per-invoice secret in path.
+// ---------------------------------------------------------------------------
+const tokiCallbackHandler = asyncHandler(async (req, res) => {
+  const { paymentId, secret } = req.params as { paymentId: string; secret: string };
+  const payment = await handleTokiCallback({
+    paymentId,
+    secret,
+    body: (req.body ?? {}) as Record<string, unknown>,
+    headers: req.headers,
+  });
+  res.json({ status: payment.status, paidAmount: payment.paidAmount });
+});
+
+paymentsRouter.all('/toki/callback/:paymentId/:secret', callbackLimiter, tokiCallbackHandler);
+paymentsRouter.all('/toki/failure/:paymentId/:secret', callbackLimiter, tokiCallbackHandler);
+
+// ---------------------------------------------------------------------------
 // Everything below requires an authenticated principal.
 // ---------------------------------------------------------------------------
 
@@ -76,6 +94,11 @@ paymentsRouter.get(
       invoiceTtlMinutes: env.QPAY_INVOICE_TTL_MINUTES,
       credentialsConfigured: !!(env.QPAY_USERNAME && env.QPAY_PASSWORD),
       tokens: [tokenStatus('merchant'), tokenStatus('quickqr')],
+      toki: {
+        enabled: env.TOKI_ENABLED,
+        mode: env.TOKI_MODE,
+        configured: !!(env.TOKI_USERNAME && env.TOKI_PASSWORD && env.TOKI_MERCHANT_ID),
+      },
     });
   }),
 );
@@ -83,6 +106,9 @@ paymentsRouter.get(
 const createSchema = z.object({
   amount: z.number().positive().optional(),
   description: z.string().min(1).max(255).optional(),
+  provider: z.enum(PAYMENT_PROVIDERS).optional(),
+  tokiMethod: z.enum(['QR', 'PHONE', 'DEEPLINK']).optional(),
+  tokiPhoneNo: z.string().optional(),
   senderInvoiceNo: z.string().min(1).max(45).optional(),
   receiverCode: z.string().min(1).max(45).optional(),
   receiver: z

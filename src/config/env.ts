@@ -182,6 +182,28 @@ const schema = z.object({
    */
   GOLOMT_TOKEN_ENABLED: bool(false),
 
+  // ---------- Toki Pay ----------
+  /** Master switch for Toki payments and top-ups */
+  TOKI_ENABLED: bool(false),
+  /** staging -> https://staging-api.toki.mn, production -> https://ms-api.toki.mn */
+  TOKI_MODE: z.enum(['staging', 'production']).default('staging'),
+  TOKI_BASE_URL: opt
+    .transform((v) => v?.replace(/\/+$/, ''))
+    .pipe(z.string().url().optional()),
+  /** HTTP Basic Auth credentials for Toki (GET /third-party-service/v1/auth/token) */
+  TOKI_USERNAME: opt,
+  TOKI_PASSWORD: optRaw,
+  /** Merchant ID provided by Toki */
+  TOKI_MERCHANT_ID: opt,
+  /** API key header value for Toki requests (defaults to 'third_party_pay') */
+  TOKI_API_KEY: text('third_party_pay'),
+  /** Origin Toki calls back on (defaults to PUBLIC_BASE_URL) */
+  TOKI_CALLBACK_BASE_URL: opt
+    .transform((v) => v?.replace(/\/+$/, ''))
+    .pipe(z.string().url().optional()),
+  TOKI_INVOICE_TTL_MINUTES: int(30),
+  TOKI_HTTP_TIMEOUT_MS: int(15_000),
+
   // ---------- Platform fee ----------
   /**
    * Eplug's service fee, as a percentage added on top of the energy cost
@@ -359,3 +381,30 @@ export function golomtReturnUrl(transactionId: string): string {
   const origin = env.GOLOMT_CALLBACK_BASE_URL ?? env.PUBLIC_BASE_URL;
   return `${origin}${env.DRIVER_API_BASE_PATH}/payments/golomt/return/${transactionId}`;
 }
+
+/** Base URL for Toki API depending on mode or explicit override */
+export function tokiBaseUrl(): string {
+  if (env.TOKI_BASE_URL) return env.TOKI_BASE_URL;
+  return env.TOKI_MODE === 'production'
+    ? 'https://ms-api.toki.mn'
+    : 'https://staging-api.toki.mn';
+}
+
+/** HTTP Basic Authorization header value for Toki auth */
+export function tokiBasicAuth(): string | null {
+  if (!env.TOKI_USERNAME?.trim() || !env.TOKI_PASSWORD) return null;
+  return Buffer.from(`${env.TOKI_USERNAME.trim()}:${env.TOKI_PASSWORD}`, 'utf8').toString('base64');
+}
+
+/** Webhook success callback URL for Toki */
+export function tokiCallbackUrl(paymentId: string, secret: string): string {
+  const origin = env.TOKI_CALLBACK_BASE_URL ?? env.PUBLIC_BASE_URL;
+  return `${origin}${env.API_BASE_PATH}/payments/toki/callback/${paymentId}/${secret}`;
+}
+
+/** Webhook failure callback URL for Toki */
+export function tokiFailureUrl(paymentId: string, secret: string): string {
+  const origin = env.TOKI_CALLBACK_BASE_URL ?? env.PUBLIC_BASE_URL;
+  return `${origin}${env.API_BASE_PATH}/payments/toki/failure/${paymentId}/${secret}`;
+}
+

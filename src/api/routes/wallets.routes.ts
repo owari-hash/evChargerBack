@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { env } from '../../config/env';
 import { badRequest, notFound } from '../../lib/errors';
 import { Wallet, WALLET_ENTRY_TYPES, WALLET_OWNER_TYPES } from '../../models/Wallet';
+import { PAYMENT_PROVIDERS } from '../../models/Payment';
 import { createPayment, toPaymentView } from '../../services/payment.service';
 import {
   balanceOf,
@@ -189,6 +190,9 @@ walletsRouter.get(
 const topUpSchema = z.object({
   amount: z.number().int().positive(),
   description: z.string().min(1).max(255).optional(),
+  provider: z.enum(PAYMENT_PROVIDERS).optional(),
+  tokiMethod: z.enum(['QR', 'PHONE', 'DEEPLINK']).optional(),
+  tokiPhoneNo: z.string().optional(),
   /** Ties the top-up to a card, so a kiosk receipt can name it. */
   idTag: z.string().max(64).optional(),
   /** QPay's invoice_receiver_code — a phone number or customer reference. */
@@ -211,7 +215,7 @@ walletsRouter.post(
       );
     }
 
-    // Make sure the wallet exists before QPay does, so a callback arriving
+    // Make sure the wallet exists before payment settles, so a callback arriving
     // moments later has somewhere to credit.
     await getOrCreateWallet(owner);
 
@@ -219,6 +223,9 @@ walletsRouter.post(
       amount: body.amount,
       description: body.description ?? `Хэтэвч цэнэглэлт — ${body.amount.toLocaleString('mn-MN')}₮`,
       purpose: 'WALLET_TOPUP',
+      provider: body.provider,
+      tokiMethod: body.tokiMethod,
+      tokiPhoneNo: body.tokiPhoneNo,
       walletOwnerType: owner.ownerType,
       walletOwnerId: owner.ownerId,
       idTag: body.idTag,

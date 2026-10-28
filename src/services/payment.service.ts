@@ -7,6 +7,8 @@ import {
   qpayCallbackUrl,
   qpayInvoiceCode,
   qpayQuickQrBankAccount,
+  tokiCallbackUrl,
+  tokiFailureUrl,
 } from '../config/env';
 import {
   HttpError,
@@ -20,6 +22,7 @@ import {
   Payment,
   type PaymentDoc,
   type PaymentPurpose,
+  type PaymentProvider,
   type PaymentStatus,
 } from '../models/Payment';
 import type { WalletOwnerType } from '../models/Wallet';
@@ -31,6 +34,8 @@ import { QpayError, qpayLogger } from './qpay/http';
 import * as merchant from './qpay/merchant.client';
 import * as quickqr from './qpay/quickqr.client';
 import * as golomt from './golomt/client';
+import * as toki from './toki/client';
+import { TokiError, tokiLogger } from './toki/http';
 import { decryptSecret, encryptSecret } from './qpay/crypto';
 import { credit as creditWallet, debit as debitWallet } from './wallet.service';
 import { issueEBarimtForTransaction, issueEBarimtForPayment } from './ebarimt.service';
@@ -58,6 +63,21 @@ function assertEnabled(): void {
   if (!env.QPAY_USERNAME || !env.QPAY_PASSWORD) {
     throw serviceUnavailable('QPay credentials are not configured');
   }
+}
+
+export function assertTokiEnabled(): void {
+  if (!env.TOKI_ENABLED) throw serviceUnavailable('Toki integration is disabled (TOKI_ENABLED=false)');
+  if (!env.TOKI_USERNAME || !env.TOKI_PASSWORD) {
+    throw serviceUnavailable('Toki credentials are not configured');
+  }
+}
+
+function rethrowToki(err: unknown, context: string): never {
+  if (err instanceof TokiError) {
+    tokiLogger.warn({ context, status: err.status, message: err.message }, 'toki call failed');
+    throw new HttpError(err.status, err.message);
+  }
+  throw err;
 }
 
 /**
@@ -142,6 +162,9 @@ export interface CreatePaymentInput {
   bankAccounts?: quickqr.QuickQrBankAccount[];
   lines?: merchant.QpayInvoiceLine[];
   expiryMinutes?: number;
+  provider?: PaymentProvider;
+  tokiMethod?: 'QR' | 'PHONE' | 'DEEPLINK';
+  tokiPhoneNo?: string;
 }
 
 /** Public projection: everything a client needs to render the QR, nothing secret. */
@@ -173,6 +196,151 @@ function pickString(res: Record<string, unknown>, ...keys: string[]): string | u
 }
 
 /**
+ * Create a Toki Pay payment (QR, phone push or deeplink) and local Payment record.
+ */
+export async function createTokiPayment(input: CreatePaymentInput): Promise<PaymentDoc> {
+  assertTokiEnabled();
+
+  const purpose: PaymentPurpose = input.purpose ?? 'CHARGING';
+  if (purpose === 'WALLET_TOPUP' && !input.walletOwnerId?.trim()) {
+    throw badRequest('walletOwnerId is required for a WALLET_TOPUP invoice');
+  }
+
+  let amount = input.amount;
+  let description = input.description;
+  const meta: Partial<CreatePaymentInput> = { ...input };
+
+  if (input.transactionId !== undefined) {
+    const tx = await Transaction.findById(input.transactionId).lean();
+    if (!tx) throw notFound(`Transaction ${input.transactionId} not found`);
+    if (amount === undefined) {
+      const derived =
+        tx.cost ?? sessionCost(tx.energyWh ?? 0, tx.tariffPerKwh, tx.feePercent)?.cost;
+      if (derived === undefined) {
+        throw badRequest(
+          `Transaction ${input.transactionId} has no cost or tariffPerKwh; pass an explicit amount`,
+        );
+      }
+      amount = derived;
+    }
+    const cpId = (await cpIdFor(tx.chargePointId)) ?? 'unknown station';
+    description ??= `Charging session ${tx._id} at ${cpId} (${((tx.energyWh ?? 0) / 1000).toFixed(
+      2,
+    )} kWh)`;
+    meta.chargePointId = input.chargePointId ?? tx.chargePointId;
+    meta.connectorId = input.connectorId ?? tx.connectorId;
+    meta.idTag = input.idTag ?? tx.idTag;
+  }
+
+  if (amount === undefined) throw badRequest('amount is required');
+  const finalAmount = normaliseAmount(amount);
+  const finalDescription = (description ?? 'EV charging').slice(0, 255);
+  const senderInvoiceNo = (input.senderInvoiceNo ?? `TK-${randomUUID().slice(0, 20)}`).slice(0, 45);
+
+  const existing = await Payment.findOne({ senderInvoiceNo }).select('+callbackSecret');
+  if (existing) {
+    if (existing.status === 'PENDING' && existing.invoiceId) return existing;
+    if (existing.status !== 'PENDING') {
+      throw conflict(`Invoice ${senderInvoiceNo} already exists with status ${existing.status}`);
+    }
+  }
+
+  const ttlMinutes = input.expiryMinutes ?? env.TOKI_INVOICE_TTL_MINUTES;
+  const callbackSecret = randomBytes(24).toString('base64url');
+
+  const payment =
+    existing ??
+    new Payment({
+      senderInvoiceNo,
+      provider: 'TOKI',
+      status: 'PENDING',
+      amount: finalAmount,
+      currency: 'MNT',
+      description: finalDescription,
+      transactionId: input.transactionId,
+      chargePointId: meta.chargePointId,
+      connectorId: meta.connectorId,
+      idTag: meta.idTag,
+      userId: input.userId,
+      purpose,
+      walletOwnerType: purpose === 'WALLET_TOPUP' ? input.walletOwnerType : undefined,
+      walletOwnerId: purpose === 'WALLET_TOPUP' ? input.walletOwnerId : undefined,
+      merchantId: env.TOKI_MERCHANT_ID,
+      invoiceReceiverCode: input.receiverCode ?? input.idTag ?? 'terminal',
+      callbackSecret,
+      expiresAt: new Date(Date.now() + ttlMinutes * 60_000),
+    });
+
+  if (!payment.callbackSecret) payment.callbackSecret = callbackSecret;
+  if (!existing) await payment.save();
+
+  const callbackUrl = tokiCallbackUrl(String(payment._id), payment.callbackSecret);
+  const failureUrl = tokiFailureUrl(String(payment._id), payment.callbackSecret);
+
+  try {
+    const method = input.tokiMethod ?? 'QR';
+    if (method === 'PHONE') {
+      if (!input.tokiPhoneNo?.trim()) {
+        throw badRequest('tokiPhoneNo is required for Toki phone push');
+      }
+      const res = await toki.createPhonePush({
+        successUrl: callbackUrl,
+        failureUrl,
+        orderId: senderInvoiceNo,
+        phoneNo: input.tokiPhoneNo,
+        amount: finalAmount,
+        notes: finalDescription,
+      });
+      payment.invoiceId = res.requestId;
+      payment.tokiRequestId = res.requestId;
+      payment.tokiPhoneNo = input.tokiPhoneNo;
+    } else if (method === 'DEEPLINK') {
+      const res = await toki.createDeeplink({
+        successUrl: callbackUrl,
+        failureUrl,
+        orderId: senderInvoiceNo,
+        amount: finalAmount,
+        notes: finalDescription,
+      });
+      payment.invoiceId = res.transactionId;
+      payment.tokiTransactionId = res.transactionId;
+      payment.tokiDeeplink = res.deeplink;
+      payment.deeplinks = [
+        { name: 'Toki', description: 'Toki app', link: res.deeplink },
+      ] as typeof payment.deeplinks;
+    } else {
+      // Default: Merchant QR
+      const res = await toki.createMerchantQr({
+        successUrl: callbackUrl,
+        failureUrl,
+        orderId: senderInvoiceNo,
+        amount: finalAmount,
+        notes: finalDescription,
+      });
+      payment.invoiceId = res.transactionId;
+      payment.tokiTransactionId = res.transactionId;
+      payment.tokiRequestId = res.requestId;
+      payment.qrText = res.requestId;
+      payment.qrImage = res.qrImage;
+    }
+  } catch (err) {
+    payment.status = 'FAILED';
+    payment.lastError = err instanceof Error ? err.message.slice(0, 500) : 'unknown error';
+    await payment.save();
+    rethrowToki(err, 'createTokiPayment');
+  }
+
+  await payment.save();
+  bus.emitEvent('payment.created', await cpIdFor(payment.chargePointId), {
+    paymentId: String(payment._id),
+    senderInvoiceNo,
+    invoiceId: payment.invoiceId,
+    amount: finalAmount,
+  });
+  return payment;
+}
+
+/**
  * Create a QPay invoice and the local Payment record that tracks it.
  *
  * The local record is written first so a QPay failure still leaves an auditable
@@ -180,6 +348,10 @@ function pickString(res: Record<string, unknown>, ...keys: string[]): string | u
  * reference returns the original invoice instead of double-billing the customer.
  */
 export async function createPayment(input: CreatePaymentInput): Promise<PaymentDoc> {
+  if (input.provider === 'TOKI') {
+    return createTokiPayment(input);
+  }
+
   assertEnabled();
 
   const purpose: PaymentPurpose = input.purpose ?? 'CHARGING';
@@ -385,7 +557,7 @@ async function applyWalletTopUp(payment: PaymentDoc): Promise<void> {
         idempotencyKey: `payment:${String(payment._id)}`,
         paymentId: String(payment._id),
         idTag: payment.idTag ?? undefined,
-        createdBy: payment.provider === 'GOLOMT' ? 'golomt' : 'qpay',
+        createdBy: payment.provider === 'TOKI' ? 'toki' : payment.provider === 'GOLOMT' ? 'golomt' : 'qpay',
       },
     );
 
@@ -411,6 +583,7 @@ async function applyWalletTopUp(payment: PaymentDoc): Promise<void> {
  */
 export async function syncPayment(payment: PaymentDoc): Promise<PaymentDoc> {
   if (payment.provider === 'GOLOMT') return syncGolomtPayment(payment);
+  if (payment.provider === 'TOKI') return syncTokiPayment(payment);
   assertEnabled();
   if (!payment.invoiceId) throw badRequest('Payment has no QPay invoice yet');
 
@@ -925,6 +1098,156 @@ export async function handleGolomtNotification(body: Record<string, unknown>): P
   return payment.status;
 }
 
+/**
+ * Check payment status against Toki API and reconcile locally.
+ */
+export async function syncTokiPayment(payment: PaymentDoc): Promise<PaymentDoc> {
+  if (payment.status === 'PAID' || payment.status === 'REFUNDED') return payment;
+  const requestIdOrTxId = payment.tokiTransactionId || payment.tokiRequestId || payment.invoiceId;
+  if (!requestIdOrTxId) throw badRequest('Payment has no Toki invoice reference');
+
+  let res: toki.TokiStatusResult;
+  try {
+    res = await toki.checkPaymentStatus(requestIdOrTxId);
+  } catch (err) {
+    payment.lastError = err instanceof Error ? err.message.slice(0, 500) : 'unknown error';
+    payment.checkedAt = new Date();
+    await payment.save();
+    rethrowToki(err, 'checkPaymentStatus');
+  }
+
+  payment.checkedAt = new Date();
+  payment.checkCount = (payment.checkCount ?? 0) + 1;
+  payment.lastError = undefined;
+
+  const previousStatus = payment.status as PaymentStatus;
+
+  if (res.status === 'APPROVED') {
+    payment.status = 'PAID';
+    payment.paidAmount = payment.amount;
+    payment.paidAt ??= new Date();
+    if (res.transNumber) payment.tokiTransNumber = res.transNumber;
+    if (res.vatDetails?.vatId && res.vatDetails?.vatType) {
+      payment.tokiVatDetails = {
+        vatType: res.vatDetails.vatType,
+        vatId: res.vatDetails.vatId,
+        registered: payment.tokiVatDetails?.registered ?? false,
+      };
+    }
+  } else if (res.status === 'CANCELLED') {
+    payment.status = 'CANCELED';
+  } else if (res.status === 'EXPIRED') {
+    payment.status = 'EXPIRED';
+  } else if (payment.expiresAt && payment.expiresAt.getTime() < Date.now()) {
+    payment.status = 'EXPIRED';
+  }
+
+  await payment.save();
+
+  if (payment.status === 'PAID' && previousStatus !== 'PAID') {
+    if (payment.transactionId !== undefined && payment.transactionId !== null) {
+      await Transaction.updateOne(
+        { _id: payment.transactionId },
+        { $set: { cost: payment.paidAmount } },
+      ).catch(() => undefined);
+
+      let resolvedCustomerNo: string | undefined;
+      if (payment.tokiVatDetails?.vatId) {
+        resolvedCustomerNo = payment.tokiVatDetails.vatId;
+      } else if (payment.userId) {
+        const driver = await store.findUserById(payment.userId).catch(() => null);
+        resolvedCustomerNo =
+          driver?.ebarimtCustomerNo ||
+          (driver?.phone && /^\d{8}$/.test(driver.phone.trim()) ? driver.phone.trim() : undefined);
+      }
+
+      const ebarimtRes = await issueEBarimtForTransaction(payment.transactionId, {
+        customerNo: resolvedCustomerNo,
+      }).catch((err: unknown) => {
+        tokiLogger.error(
+          { paymentId: String(payment._id), err: (err as Error).message },
+          'failed to issue ebarimt after Toki payment',
+        );
+        return null;
+      });
+
+      // If corporate VAT was requested and we have eBarimt result with DDTD, register it with Toki!
+      const receiptId = ebarimtRes?.ebarimt?.receiptId;
+      if (payment.tokiVatDetails?.vatType === 'ORGANIZATION' && receiptId && payment.tokiTransNumber) {
+        await toki
+          .registerOrganizationVat({
+            transactionId: payment.tokiTransNumber,
+            DDTD: receiptId,
+            totalAmount: payment.paidAmount,
+            vatAmount: ebarimtRes?.ebarimt?.totalVAT ?? 0,
+          })
+          .then(async () => {
+            payment.tokiVatDetails!.registered = true;
+            payment.tokiVatDetails!.registeredAt = new Date();
+            await payment.save();
+          })
+          .catch((err: unknown) => {
+            tokiLogger.error(
+              { paymentId: String(payment._id), err: (err as Error).message },
+              'failed to register org vat to toki',
+            );
+          });
+      }
+    }
+
+    await applyWalletTopUp(payment);
+    bus.emitEvent('payment.paid', await cpIdFor(payment.chargePointId), {
+      paymentId: String(payment._id),
+      senderInvoiceNo: payment.senderInvoiceNo,
+      invoiceId: payment.invoiceId,
+      amount: payment.amount,
+      paidAmount: payment.paidAmount,
+      transactionId: payment.transactionId,
+      idTag: payment.idTag,
+    });
+    tokiLogger.info(
+      { paymentId: String(payment._id), invoiceId: payment.invoiceId, paidAmount: payment.paidAmount },
+      'toki payment settled',
+    );
+  }
+
+  return payment;
+}
+
+/**
+ * Handle incoming webhook callback from Toki on successUrl.
+ */
+export async function handleTokiCallback(params: {
+  paymentId: string;
+  secret: string;
+  body: Record<string, unknown>;
+  headers?: Record<string, string | string[] | undefined>;
+}): Promise<PaymentDoc> {
+  const payment = await Payment.findById(params.paymentId).select('+callbackSecret');
+  if (!payment) throw notFound('Payment not found');
+  if (!secretMatches(payment.callbackSecret, params.secret)) throw unauthorized('Invalid callback secret');
+
+  payment.callbackAt = new Date();
+  payment.callbackCount = (payment.callbackCount ?? 0) + 1;
+
+  // Extract organization VAT if sent in headers (VAT_ID, VAT_TYPE)
+  const rawVatId = params.headers?.['vat_id'] || params.headers?.['VAT_ID'];
+  const rawVatType = params.headers?.['vat_type'] || params.headers?.['VAT_TYPE'];
+  if (rawVatId && rawVatType) {
+    payment.tokiVatDetails = {
+      vatId: String(Array.isArray(rawVatId) ? rawVatId[0] : rawVatId),
+      vatType: String(Array.isArray(rawVatType) ? rawVatType[0] : rawVatType).toUpperCase(),
+      registered: false,
+    };
+  }
+
+  const transNumber = typeof params.body.requestId === 'string' ? params.body.requestId : undefined;
+  if (transNumber) payment.tokiTransNumber = transNumber;
+
+  await payment.save();
+  return syncTokiPayment(payment);
+}
+
 /** A driver's saved cards, newest first. */
 export async function listSavedCards(userId: string): Promise<Record<string, unknown>[]> {
   if (!env.GOLOMT_TOKEN_ENABLED) return [];
@@ -970,19 +1293,30 @@ export async function handleCallback(
   return syncPayment(payment);
 }
 
-/** Cancel an unpaid invoice on QPay and locally. */
+/** Cancel an unpaid invoice on QPay/Toki and locally. */
 export async function cancelPayment(payment: PaymentDoc): Promise<PaymentDoc> {
-  if (payment.provider !== 'GOLOMT') assertEnabled();
   if (payment.status === 'PAID') throw conflict('A paid invoice cannot be canceled; refund it instead');
 
-  // Golomt has no cancel call; an unpaid page simply lapses on its side.
-  if (payment.invoiceId && payment.provider !== 'GOLOMT') {
-    try {
-      if (payment.provider === 'QPAY_QUICKQR') await quickqr.cancelInvoice(payment.invoiceId);
-      else await merchant.cancelInvoice(payment.invoiceId);
-    } catch (err) {
-      // A 404 from QPay means it is already gone — that is still "canceled" for us.
-      if (!(err instanceof QpayError && err.status === 404)) rethrow(err, 'cancelInvoice');
+  if (payment.provider === 'TOKI') {
+    assertTokiEnabled();
+    const reqId = payment.tokiRequestId || payment.invoiceId;
+    if (reqId) {
+      try {
+        await toki.cancelInvoice(reqId);
+      } catch (err) {
+        if (!(err instanceof TokiError && err.status === 404)) rethrowToki(err, 'cancelInvoice');
+      }
+    }
+  } else if (payment.provider !== 'GOLOMT') {
+    assertEnabled();
+    if (payment.invoiceId) {
+      try {
+        if (payment.provider === 'QPAY_QUICKQR') await quickqr.cancelInvoice(payment.invoiceId);
+        else await merchant.cancelInvoice(payment.invoiceId);
+      } catch (err) {
+        // A 404 from QPay means it is already gone — that is still "canceled" for us.
+        if (!(err instanceof QpayError && err.status === 404)) rethrow(err, 'cancelInvoice');
+      }
     }
   }
 
@@ -1000,8 +1334,52 @@ export async function cancelPayment(payment: PaymentDoc): Promise<PaymentDoc> {
 
 /** Refund a settled payment leg. */
 export async function refundPayment(payment: PaymentDoc, note?: string): Promise<PaymentDoc> {
-  assertEnabled();
   if (payment.status !== 'PAID') throw conflict('Only a PAID invoice can be refunded');
+
+  if (payment.provider === 'TOKI') {
+    assertTokiEnabled();
+    const transNumber = payment.tokiTransNumber || payment.tokiRequestId;
+    if (!transNumber) throw conflict('No settled Toki payment transNumber to refund');
+
+    try {
+      await toki.refundPayment({
+        merchantId: payment.merchantId ?? undefined,
+        transNumber,
+        amount: payment.paidAmount || payment.amount,
+      });
+    } catch (err) {
+      rethrowToki(err, 'refundPayment');
+    }
+
+    payment.status = 'REFUNDED';
+    await payment.save();
+
+    if (payment.purpose === 'WALLET_TOPUP' && payment.walletCreditedAt && payment.walletOwnerId) {
+      await debitWallet(
+        {
+          ownerType: (payment.walletOwnerType ?? 'USER') as WalletOwnerType,
+          ownerId: payment.walletOwnerId,
+        },
+        payment.paidAmount || payment.amount,
+        'ADJUSTMENT',
+        {
+          description: 'Цэнэглэлт буцаагдсан (Toki)',
+          idempotencyKey: `payment-refund:${String(payment._id)}`,
+          paymentId: String(payment._id),
+          createdBy: 'toki',
+        },
+        { allowNegative: true },
+      ).catch((err: unknown) =>
+        tokiLogger.error(
+          { paymentId: String(payment._id), err: (err as Error).message },
+          'failed to reverse wallet credit for refunded Toki top-up',
+        ),
+      );
+    }
+    return payment;
+  }
+
+  assertEnabled();
   if (payment.provider === 'QPAY_QUICKQR') {
     throw conflict('QuickQR invoices cannot be refunded through the API; refund them in QPay');
   }
@@ -1049,7 +1427,7 @@ export async function refundPayment(payment: PaymentDoc, note?: string): Promise
 }
 
 /**
- * Reconcile invoices that are still pending — the safety net for callbacks QPay
+ * Reconcile invoices that are still pending — the safety net for callbacks QPay/Toki
  * never delivered. Called by the maintenance loop and the admin sync endpoint.
  */
 export async function reconcilePendingPayments(limit = 50): Promise<{
@@ -1060,6 +1438,7 @@ export async function reconcilePendingPayments(limit = 50): Promise<{
   const providers = [
     ...(env.QPAY_ENABLED ? (['QPAY', 'QPAY_QUICKQR'] as const) : []),
     ...(env.GOLOMT_ENABLED ? (['GOLOMT'] as const) : []),
+    ...(env.TOKI_ENABLED ? (['TOKI'] as const) : []),
   ];
   if (providers.length === 0) return { checked: 0, paid: 0, expired: 0 };
 
@@ -1081,7 +1460,7 @@ export async function reconcilePendingPayments(limit = 50): Promise<{
       if (updated.status === 'PAID') paid += 1;
       if (updated.status === 'EXPIRED') expired += 1;
     } catch (err) {
-      qpayLogger.warn(
+      (payment.provider === 'TOKI' ? tokiLogger : qpayLogger).warn(
         { paymentId: String(payment._id), err: (err as Error).message },
         'payment reconciliation failed',
       );

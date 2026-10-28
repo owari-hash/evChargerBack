@@ -1,7 +1,7 @@
 import { Schema, model, type InferSchemaType, type HydratedDocument } from 'mongoose';
 import { WALLET_OWNER_TYPES } from './Wallet';
 
-export const PAYMENT_PROVIDERS = ['QPAY', 'QPAY_QUICKQR', 'GOLOMT'] as const;
+export const PAYMENT_PROVIDERS = ['QPAY', 'QPAY_QUICKQR', 'GOLOMT', 'TOKI'] as const;
 export type PaymentProvider = (typeof PAYMENT_PROVIDERS)[number];
 
 /**
@@ -51,7 +51,7 @@ const paymentSchema = new Schema(
     /** Provider side identifiers (Golomt: the hosted page's invoice id). */
     invoiceId: { type: String, index: true, sparse: true },
     invoiceCode: { type: String },
-    merchantId: { type: String }, // QuickQR sub-merchant, when applicable
+    merchantId: { type: String }, // QuickQR / Toki sub-merchant, when applicable
 
     amount: { type: Number, required: true },
     paidAmount: { type: Number, default: 0 },
@@ -89,6 +89,22 @@ const paymentSchema = new Schema(
     /** PAGE: keep the card's token once paid. TOKEN: the card that was charged. */
     saveCard: { type: Boolean },
     savedCardId: { type: String },
+
+    /**
+     * Toki Pay specific identifiers & details.
+     */
+    tokiRequestId: { type: String, index: true, sparse: true },
+    tokiTransactionId: { type: String, index: true, sparse: true },
+    tokiTransNumber: { type: String, index: true, sparse: true },
+    tokiPhoneNo: { type: String },
+    tokiDeeplink: { type: String },
+    tokiVatDetails: {
+      vatType: { type: String },
+      vatId: { type: String },
+      registered: { type: Boolean, default: false },
+      registeredAt: { type: Date },
+      error: { type: String },
+    },
     deeplinks: {
       type: [
         new Schema(

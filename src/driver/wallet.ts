@@ -44,6 +44,8 @@ export interface WalletConfig {
   savedCardsEnabled: boolean;
   /** SocialPay through Golomt: pay in the SocialPay app. */
   socialPayEnabled: boolean;
+  /** Toki Pay (QR, phone push, deeplink) */
+  tokiEnabled: boolean;
 }
 
 export function walletConfig(): WalletConfig {
@@ -60,6 +62,7 @@ export function walletConfig(): WalletConfig {
     cardTopUpEnabled: env.GOLOMT_ENABLED,
     savedCardsEnabled: env.GOLOMT_ENABLED && env.GOLOMT_TOKEN_ENABLED,
     socialPayEnabled: env.GOLOMT_ENABLED,
+    tokiEnabled: env.TOKI_ENABLED,
   };
 }
 
@@ -89,11 +92,13 @@ export async function createTopUp(input: {
   amount: number;
   description: string;
   receiverCode?: string;
-  method?: 'qpay' | 'card' | 'saved_card' | 'socialpay';
+  method?: 'qpay' | 'card' | 'saved_card' | 'socialpay' | 'toki';
   /** card: keep the card for one-tap top-ups once paid. */
   saveCard?: boolean;
   /** saved_card: which of the driver's saved cards to charge. */
   cardId?: string;
+  tokiMethod?: 'QR' | 'PHONE' | 'DEEPLINK';
+  tokiPhoneNo?: string;
 }): Promise<Record<string, unknown>> {
   const owner = ownerFor(input.userId);
   // The wallet has to exist before the payment settles and credits it.
@@ -137,6 +142,9 @@ export async function createTopUp(input: {
     walletOwnerId: owner.ownerId,
     userId: input.userId,
     receiverCode: input.receiverCode ?? input.userId,
+    provider: input.method === 'toki' ? 'TOKI' : undefined,
+    tokiMethod: input.tokiMethod,
+    tokiPhoneNo: input.tokiPhoneNo,
   });
   return toPaymentView(payment);
 }
