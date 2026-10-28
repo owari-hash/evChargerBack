@@ -91,6 +91,26 @@ export async function startTransaction(
 
   const cp = await ChargePoint.findById(input.chargePointId).lean();
 
+  let maxAllowedCost: number | undefined;
+  let maxAllowedEnergyKwh: number | undefined;
+
+  try {
+    const isInternal = await isInternalTag(input.idTag);
+    const owner = await resolveWalletOwnerForIdTag(input.idTag);
+    if (!isInternal && owner && owner.ownerType !== 'CLIENT') {
+      const balance = await balanceOf(owner);
+      if (balance > 0) {
+        maxAllowedCost = balance;
+        const tariff = cp?.tariffPerKwh ?? 1000;
+        if (tariff > 0) {
+          maxAllowedEnergyKwh = Number((balance / tariff).toFixed(2));
+        }
+      }
+    }
+  } catch (err) {
+    logger.warn({ err, idTag: input.idTag }, 'could not resolve initial wallet limit for startTransaction');
+  }
+
   await Transaction.create({
     _id: transactionId,
     chargePointId: input.chargePointId,
@@ -108,6 +128,8 @@ export async function startTransaction(
     feePercent: cp ? await feePercentForStation(cp) : undefined,
     // null = "no client", distinct from sessions recorded before this field existed.
     clientId: cp?.clientId ?? null,
+    maxAllowedCost,
+    maxAllowedEnergyKwh,
     // Inherit vehicle information from recent DataTransfer/BMS handshake (within 15 min)
     ...(cp?.lastVehicleInfo &&
     cp.lastVehicleInfo.receivedAt &&
@@ -171,14 +193,17 @@ export interface StopTransactionInput {
 }
 
 async function enforcePrepaidBalanceCap(tx: TransactionDoc): Promise<void> {
-  if (!env.WALLET_ENABLED || env.WALLET_ALLOW_NEGATIVE) return;
+  if (!env.WALLET_ENABLED) return;
   try {
     const isInternal = await isInternalTag(tx.idTag);
     if (isInternal) return; // Do not cap internal sessions; preserve real energyWh, feeAmount, cost for admin reports
     const owner = await resolveWalletOwnerForIdTag(tx.idTag);
     if (owner && owner.ownerType !== 'CLIENT') {
-      const balance = await balanceOf(owner);
-      capCostToBalance(tx, balance);
+      const cap =
+        typeof tx.maxAllowedCost === 'number' && tx.maxAllowedCost > 0
+          ? tx.maxAllowedCost
+          : await balanceOf(owner);
+      capCostToBalance(tx, cap);
     }
   } catch (err) {
     logger.warn({ err, txId: tx._id }, 'failed capping prepaid cost to wallet balance');
