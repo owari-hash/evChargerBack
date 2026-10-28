@@ -444,6 +444,7 @@ interface RawTransaction {
   lastSocPercent?: number;
   stopReason?: string | null;
   ebarimt?: unknown;
+  ebarimtRequest?: { type?: 'B2C_RECEIPT' | 'B2B_RECEIPT'; customerTin?: string; customerName?: string };
   /** Station's flat rate at start; the blended rate once billed. */
   tariffPerKwh?: number;
   /** The station's time-of-day zones as they were when the session started. */
@@ -482,6 +483,13 @@ function toSession(tx: RawTransaction): ChargingSession {
     lastSocPercent: tx.lastSocPercent,
     stopReason: tx.stopReason ?? undefined,
     ebarimt: tx.ebarimt as EBarimtData | undefined,
+    ebarimtRequest: tx.ebarimtRequest?.type
+      ? {
+          type: tx.ebarimtRequest.type,
+          customerTin: tx.ebarimtRequest.customerTin || undefined,
+          customerName: tx.ebarimtRequest.customerName || undefined,
+        }
+      : undefined,
   };
 }
 
@@ -793,11 +801,19 @@ async function startable(
  * checked here, so a start that cannot run is refused with the reason instead
  * of being reported as "Accepted" and then silently rejected by the station.
  */
+/** The receipt a driver asks for when they press Charge. */
+export interface EbarimtChoice {
+  type: 'B2C_RECEIPT' | 'B2B_RECEIPT';
+  customerTin?: string;
+  customerName?: string;
+}
+
 export async function remoteStart(
   chargePointId: string,
   idTag: string,
   connectorId: number | undefined,
   issuedBy: string,
+  ebarimt?: EbarimtChoice,
 ): Promise<{ status: string }> {
   const cp = await requireChargePoint(chargePointId);
   if (!(await IdTag.exists({ _id: idTag }))) {
@@ -847,6 +863,26 @@ export async function remoteStart(
     }
   }
 
+  // Parked on the tag until the station's StartTransaction opens the session
+  // and copies it across. Always overwritten, so an old choice never lingers.
+  await IdTag.updateOne(
+    { _id: idTag },
+    ebarimt
+      ? {
+          $set: {
+            pendingEbarimt: {
+              type: ebarimt.type,
+              customerTin: ebarimt.type === 'B2B_RECEIPT' ? ebarimt.customerTin : undefined,
+              customerName: ebarimt.type === 'B2B_RECEIPT' ? ebarimt.customerName : undefined,
+              at: new Date(),
+            },
+          },
+        }
+      : { $unset: { pendingEbarimt: 1 } },
+  ).catch(() => undefined);
+  const dropPendingEbarimt = () =>
+    IdTag.updateOne({ _id: idTag }, { $unset: { pendingEbarimt: 1 } }).catch(() => undefined);
+
   try {
     const result = await sendToStation<{ status: string }>(
       cp.cpId,
@@ -854,6 +890,7 @@ export async function remoteStart(
       { idTag, ...(connectorId ? { connectorId } : {}) },
       issuedBy,
     );
+    if (result.status !== 'Accepted') await dropPendingEbarimt();
     // Rejected outright: no StartTransaction is coming, so the next attempt
     // (by this driver or another) should not have to wait out the claim.
     if (connectorId !== undefined && result.status !== 'Accepted') {
@@ -868,6 +905,7 @@ export async function remoteStart(
     }
     return result;
   } catch (err) {
+    await dropPendingEbarimt();
     if (connectorId !== undefined) await releaseConnectorClaim(cp._id, connectorId);
     throw err;
   }

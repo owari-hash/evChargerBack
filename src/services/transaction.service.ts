@@ -91,6 +91,9 @@ export async function startTransaction(
 
   const cp = await ChargePoint.findById(input.chargePointId).lean();
 
+  const ebarimtRequest =
+    idTagInfo.status === 'Accepted' ? await takePendingEbarimt(input.idTag) : undefined;
+
   await Transaction.create({
     _id: transactionId,
     chargePointId: input.chargePointId,
@@ -101,6 +104,7 @@ export async function startTransaction(
     lastMeterWh: input.meterStart,
     startTimestamp: input.timestamp,
     reservationId: input.reservationId,
+    ebarimtRequest,
     tariffPerKwh: cp?.tariffPerKwh ?? undefined,
     tariffZones: cp?.tariffZones?.length ? cp.tariffZones : undefined,
     // Snapshot the price terms and the owner: a later change must not reprice
@@ -271,7 +275,8 @@ export async function stopTransaction(
         energyWh: tx.energyWh ?? 0,
       });
 
-      // Driver chooses Personal (B2C) or Org (B2B) when requesting receipt
+      // The driver chose personal or company when they pressed Charge.
+      autoIssueEbarimt(tx);
     }
 
     // Notify the driver via SMS for session end
@@ -289,6 +294,52 @@ export async function stopTransaction(
     return { idTagInfo: { ...idTagInfo, status: 'Invalid' } };
   }
   return { idTagInfo };
+}
+
+/** How long a choice sent with RemoteStart waits for the station to start. */
+const PENDING_EBARIMT_MS = 5 * 60 * 1000;
+
+/**
+ * Claims the e-barimt choice the driver sent with their remote start, if it
+ * is fresh. Cleared in the same step so a later start (an RFID card at the
+ * unit, say) does not inherit it.
+ */
+async function takePendingEbarimt(idTag: string) {
+  const tag = await IdTag.findOneAndUpdate(
+    { _id: idTag, 'pendingEbarimt.type': { $exists: true } },
+    { $unset: { pendingEbarimt: 1 } },
+  )
+    .lean()
+    .catch(() => null);
+  const pending = tag?.pendingEbarimt;
+  if (!pending?.type || !pending.at) return undefined;
+  if (Date.now() - new Date(pending.at).getTime() > PENDING_EBARIMT_MS) return undefined;
+  return {
+    type: pending.type,
+    customerTin: pending.customerTin ?? undefined,
+    customerName: pending.customerName ?? undefined,
+    requestedAt: new Date(),
+  };
+}
+
+/**
+ * Issues the receipt the driver asked for at start, for the billed amount.
+ * Runs off the OCPP path: the PosAPI can be slow, and the station is waiting
+ * on StopTransaction.conf. A failure leaves `ebarimt.status = FAILED` and the
+ * driver can still request it by hand from the session screen.
+ */
+function autoIssueEbarimt(tx: TransactionDoc): void {
+  const request = tx.ebarimtRequest;
+  if (!request?.type || !(tx.cost && tx.cost > 0)) return;
+  void issueEBarimtForTransaction(tx._id, {
+    type: request.type,
+    customerTin: request.type === 'B2B_RECEIPT' ? request.customerTin ?? undefined : undefined,
+  }).catch((err: unknown) =>
+    logger.warn(
+      { txId: tx._id, err: (err as Error).message },
+      'auto e-barimt after session end failed',
+    ),
+  );
 }
 
 async function sendSessionStopSms(tx: TransactionDoc): Promise<void> {
@@ -383,7 +434,7 @@ export async function closeFromLastMeter(
       energyWh: tx.energyWh ?? 0,
     });
 
-    // Driver chooses Personal (B2C) or Org (B2B) when requesting receipt
+    autoIssueEbarimt(tx);
 
     void sendSessionStopSms(tx);
   }

@@ -86,6 +86,18 @@ const transactionSchema = new Schema(
       ebarimtReturned: { type: Boolean },
     },
 
+    /**
+     * The e-barimt the driver chose when they pressed Charge: personal (B2C)
+     * or a company TIN (B2B). Issued automatically once the session is billed;
+     * `ebarimt` below holds the receipt itself.
+     */
+    ebarimtRequest: {
+      type: { type: String, enum: ['B2C_RECEIPT', 'B2B_RECEIPT'] },
+      customerTin: { type: String },
+      customerName: { type: String },
+      requestedAt: { type: Date },
+    },
+
     ebarimt: {
       receiptId: { type: String },
       type: { type: String, enum: ['B2C_RECEIPT', 'B2B_RECEIPT'] },

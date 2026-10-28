@@ -22,6 +22,16 @@ const idTagSchema = new Schema(
     /** True if this is an internal user / card that charges for free without balance requirements. */
     isInternal: { type: Boolean, default: false, index: true },
 
+    /**
+     * E-barimt choice sent with a remote start. The station's StartTransaction
+     * copies it onto the new session and clears it.
+     */
+    pendingEbarimt: {
+      type: { type: String, enum: ['B2C_RECEIPT', 'B2B_RECEIPT'] },
+      customerTin: { type: String },
+      customerName: { type: String },
+      at: { type: Date },
+    },
 
     walletOwnerType: { type: String, enum: WALLET_OWNER_TYPES },
     walletOwnerId: { type: String, index: true, sparse: true },

@@ -136,6 +136,12 @@ export interface ChargingSession {
   minutesToFull?: number;
   stopReason?: string;
   ebarimt?: EBarimtData;
+  /** The receipt chosen at start; issued automatically when the session ends. */
+  ebarimtRequest?: {
+    type: 'B2C_RECEIPT' | 'B2B_RECEIPT';
+    customerTin?: string;
+    customerName?: string;
+  };
 }
 
 export interface PublicUser {

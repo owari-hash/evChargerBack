@@ -14,6 +14,7 @@ import {
   listSessionsForIdTag,
   listStations,
   remoteStart,
+  type EbarimtChoice,
   remoteStop,
   unlockSessionConnector,
   requestEBarimt,
@@ -226,6 +227,13 @@ stationRoutes.post(
 
 const startSchema = z.object({
   connectorId: z.coerce.number().int().min(1).max(64).optional(),
+  /** Personal or company e-barimt, issued automatically when the charge ends. */
+  ebarimt: z
+    .object({
+      type: z.enum(['B2C_RECEIPT', 'B2B_RECEIPT']),
+      customerTin: z.string().trim().max(20).optional(),
+    })
+    .optional(),
 });
 
 stationRoutes.post(
@@ -252,7 +260,25 @@ stationRoutes.post(
       throw badRequest('Цэнэглэх эрх олгож чадсангүй. Түр хүлээгээд дахин оролдоно уу.');
     }
 
-    return remoteStart(req.params.id!, idTag, parsed.data.connectorId, issuer(user));
+    // A company receipt needs a real TIN; checked now, not after the charge,
+    // when the driver has already driven off.
+    let ebarimt: EbarimtChoice | undefined;
+    const choice = parsed.data.ebarimt;
+    if (choice?.type === 'B2B_RECEIPT') {
+      const tin = choice.customerTin?.trim();
+      if (!tin || tin.length < 5) {
+        throw badRequest('Байгууллагын регистрийн дугаарыг зөв оруулна уу');
+      }
+      const verified = await verifyTaxpayer(tin);
+      if (!verified.valid) {
+        throw badRequest(verified.error || 'Байгууллагын регистрийн дугаар хүчингүй байна');
+      }
+      ebarimt = { type: 'B2B_RECEIPT', customerTin: verified.tin || tin, customerName: verified.name };
+    } else if (choice) {
+      ebarimt = { type: 'B2C_RECEIPT' };
+    }
+
+    return remoteStart(req.params.id!, idTag, parsed.data.connectorId, issuer(user), ebarimt);
   }),
 );
 
