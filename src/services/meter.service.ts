@@ -156,20 +156,21 @@ export async function storeMeterValues(
           const owner = await resolveWalletOwnerForIdTag(tx.idTag);
           // CLIENT ownerType and internal cards charge without prepaid balance cut-off
           if (!isInternal && owner && owner.ownerType !== 'CLIENT') {
-            const balance = await balanceOf(owner);
+            const cap =
+              typeof tx.maxAllowedCost === 'number' && tx.maxAllowedCost > 0
+                ? tx.maxAllowedCost
+                : await balanceOf(owner);
 
-            // Strictly prevent session cost from exceeding wallet balance when negative balance is forbidden
-            if (!env.WALLET_ALLOW_NEGATIVE) {
-              capCostToBalance(tx, balance);
-            }
+            // Strictly prevent session cost from exceeding wallet limit
+            capCostToBalance(tx, cap);
 
-            // Dynamic buffer: estimated 15 seconds of charging output, minimum 200 MNT
-            const pW = tx.lastPowerW ?? 15000;
-            const ratePerWh = (tx.tariffPerKwh ?? 500) / 1000;
-            const bufferMnt = Math.max(200, Math.round(((pW * 15) / 3600) * ratePerWh));
+            // Dynamic buffer: estimated 35 seconds of charging output (covers 30s sampling + 15s ramp down), minimum 500 MNT
+            const pW = tx.lastPowerW ?? 20000;
+            const ratePerWh = (tx.tariffPerKwh ?? 1000) / 1000;
+            const bufferMnt = Math.max(500, Math.round(((pW * 35) / 3600) * ratePerWh));
 
             // If cost has reached or is about to exceed available balance
-            if (tx.cost >= balance - bufferMnt) {
+            if (tx.cost >= cap - bufferMnt) {
               const now = Date.now();
               const lastAttempt = lastRemoteStopAttempts.get(tx._id) ?? 0;
               if (now - lastAttempt > 4000) {
@@ -180,7 +181,7 @@ export async function storeMeterValues(
                     cpId,
                     idTag: tx.idTag,
                     cost: tx.cost,
-                    balance,
+                    balance: cap,
                     bufferMnt,
                   },
                   'Driver wallet balance exhausted; issuing RemoteStopTransaction to prevent negative balance',

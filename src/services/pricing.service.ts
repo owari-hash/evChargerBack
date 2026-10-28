@@ -255,6 +255,10 @@ export function capCostToBalance(
     energyCost?: number | null;
     feeAmount?: number | null;
     feePercent?: number | null;
+    energyWh?: number | null;
+    tariffPerKwh?: number | null;
+    meterStop?: number | null;
+    meterStart?: number | null;
   },
   maxAllowedCost: number,
 ): void {
@@ -268,6 +272,18 @@ export function capCostToBalance(
     } else {
       tx.energyCost = cap;
       tx.feeAmount = 0;
+    }
+
+    // Clamp energyWh to match capped cost so displayed kWh is consistent with cost
+    const tariff = tx.tariffPerKwh ?? 0;
+    if (tariff > 0) {
+      const maxWh = Math.round((cap / tariff) * 1000);
+      if (typeof tx.energyWh === 'number' && tx.energyWh > maxWh) {
+        tx.energyWh = maxWh;
+        if (typeof tx.meterStart === 'number') {
+          tx.meterStop = tx.meterStart + maxWh;
+        }
+      }
     }
   }
 }

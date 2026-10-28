@@ -67,6 +67,14 @@ const transactionSchema = new Schema(
     clientId: { type: Schema.Types.ObjectId, ref: 'Client', index: true },
 
     /**
+     * User's maximum allowed prepaid cost (wallet balance at start).
+     * Strictly caps the session cost to prevent overdraft.
+     */
+    maxAllowedCost: { type: Number },
+    /** Боломжит кВт (maxAllowedCost / tariffPerKwh) */
+    maxAllowedEnergyKwh: { type: Number },
+
+    /**
      * True when the CSMS closed the session itself (reboot orphan, operator
      * force-close) from the last known meter. The station's own StopTransaction
      * may still arrive with the real meterStop; it then re-settles the bill once.
