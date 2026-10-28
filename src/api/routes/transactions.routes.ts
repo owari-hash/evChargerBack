@@ -289,3 +289,17 @@ transactionsRouter.post(
     res.json(tx.toJSON());
   }),
 );
+
+/** Delete a transaction and its meter readings. Admin only. */
+transactionsRouter.delete(
+  '/:id',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const tx = await Transaction.findById(Number(req.params.id));
+    if (!tx) throw notFound('Transaction not found');
+    await Transaction.deleteOne({ _id: tx._id });
+    await MeterValue.deleteMany({ transactionId: tx._id }).catch(() => undefined);
+    res.status(204).send();
+  }),
+);
+

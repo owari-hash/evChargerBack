@@ -46,20 +46,6 @@ export function createDriverRouter(): Router {
     res.json({ ok: true });
   });
 
-  // Transparent access tracking for mobile app & driver API hits
-  router.use((req, _res, next) => {
-    const p = req.path || '';
-    if (
-      req.method === 'GET' &&
-      (p.startsWith('/stations') ||
-        p.startsWith('/app') ||
-        p.startsWith('/account') ||
-        p.startsWith('/wallet'))
-    ) {
-      void recordAccess({}, req);
-    }
-    next();
-  });
   router.use((_req, res, next) => {
     res.setHeader('Cache-Control', 'no-store');
     next();

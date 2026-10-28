@@ -106,7 +106,7 @@ export async function startTransaction(
         maxAllowedCost = balance;
         const tariff = cp?.tariffPerKwh ?? 1000;
         if (tariff > 0) {
-          maxAllowedEnergyKwh = Number((balance / tariff).toFixed(2));
+          maxAllowedEnergyKwh = Math.floor((balance / tariff) * 1000) / 1000;
         }
       }
     }

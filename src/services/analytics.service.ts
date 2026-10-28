@@ -129,8 +129,10 @@ export async function recordAccess(input: RecordAccessInput, req?: Request): Pro
     const rawPath = input.path || req?.originalUrl || req?.url || '/';
     const cleanPath = normalizePath(rawPath);
 
-    // Ignore assets, health checks, socket pings
+    // Ignore backend API calls, assets, health checks, socket pings
     if (
+      cleanPath.startsWith('/api/') ||
+      cleanPath.startsWith('/app-api/') ||
       cleanPath.includes('/health') ||
       cleanPath.startsWith('/_next') ||
       cleanPath.endsWith('.ico') ||
@@ -247,7 +249,8 @@ export async function getAnalyticsOverview(daysCount: number = 7) {
   const sinceDate = new Date(now.getTime() - (days - 1) * 24 * 60 * 60 * 1000);
   const { dateStr: sinceStr } = getMongoliaDateAndHour(sinceDate);
 
-  const matchRange = { date: { $gte: sinceStr, $lte: todayStr } };
+  const nonApiFilter = { path: { $not: /^\/(api|app-api)\// } };
+  const matchRange = { date: { $gte: sinceStr, $lte: todayStr }, ...nonApiFilter };
 
   // 1. Overall & Platform breakdown
   const [summaryAgg, platformAgg, deviceAgg, browserAgg, topPagesAgg, hourlyAgg, dailyAgg, recentDocs] =
@@ -318,7 +321,7 @@ export async function getAnalyticsOverview(daysCount: number = 7) {
         },
         { $sort: { _id: 1 } },
       ]),
-      AccessLog.find().sort({ timestamp: -1 }).limit(15).lean(),
+      AccessLog.find(nonApiFilter).sort({ timestamp: -1 }).limit(15).lean(),
     ]);
 
   const rawSummary = summaryAgg[0] || {};
