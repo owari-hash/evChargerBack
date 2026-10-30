@@ -81,6 +81,13 @@ const transactionSchema = new Schema(
      */
     closedByCsms: { type: Boolean, default: false },
 
+    /** The last error the station reported on this session's connector while it ran. */
+    stationError: {
+      errorCode: { type: String },
+      vendorErrorCode: { type: String },
+      at: { type: Date },
+    },
+
     /** Буцаалт — the session's charge returned to the wallet. */
     refund: {
       state: { type: String, enum: ['PENDING', 'DONE'] },

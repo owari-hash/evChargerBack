@@ -168,29 +168,7 @@ function parseTags(tags: string[]): TagInfo {
   return info;
 }
 
-// TEMPORARY: show every station and connector as online and available in the
-// app and the kiosk, whatever its live state. Display only — starting a charge
-// still goes through the real checks. Set to false to restore live statuses.
-const FORCE_ALL_AVAILABLE = true;
-
 function toStation(cp: RawChargePoint, rawConnectors: RawConnector[], feePercent: number): Station {
-  const station = buildStation(cp, rawConnectors, feePercent);
-  if (!FORCE_ALL_AVAILABLE) return station;
-  const connectors = station.connectors.map((c) => ({
-    ...c,
-    status: 'Available' as ConnectorStatus,
-    availability: 'Operative' as const,
-  }));
-  return {
-    ...station,
-    isOnline: true,
-    connectors,
-    availableConnectors: connectors.length,
-    availability: 'available',
-  };
-}
-
-function buildStation(cp: RawChargePoint, rawConnectors: RawConnector[], feePercent: number): Station {
   const id = String(cp._id);
   const tags = cp.tags ?? [];
   const tagInfo = parseTags(tags);
@@ -471,6 +449,17 @@ interface RawTransaction {
   tariffPerKwh?: number;
   /** The station's time-of-day zones as they were when the session started. */
   tariffZones?: TariffZone[];
+  stationError?: { errorCode?: string; vendorErrorCode?: string };
+}
+
+/**
+ * The station could not confirm the gun was connected to the car (the CC1/CC2
+ * plug-detect signal) and almost nothing was delivered: the driver should
+ * re-plug and try again rather than wonder why nothing happened.
+ */
+function hadPlugError(tx: RawTransaction): boolean {
+  const code = tx.stationError?.vendorErrorCode ?? '';
+  return /CC[12]/i.test(code) && (tx.energyWh ?? 0) < 100;
 }
 
 /**
@@ -504,6 +493,7 @@ function toSession(tx: RawTransaction): ChargingSession {
     lastPowerW: tx.lastPowerW,
     lastSocPercent: tx.lastSocPercent,
     stopReason: tx.stopReason ?? undefined,
+    plugError: hadPlugError(tx) || undefined,
     ebarimt: tx.ebarimt as EBarimtData | undefined,
     ebarimtRequest: tx.ebarimtRequest?.type
       ? {

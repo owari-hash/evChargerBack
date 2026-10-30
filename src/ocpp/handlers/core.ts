@@ -230,6 +230,23 @@ export async function onStatusNotification(
     { upsert: true, new: true },
   );
 
+  // Keep the error on the running session so the driver can be told why it
+  // stopped — the connector's own status is overwritten moments later.
+  if (payload.connectorId > 0 && payload.errorCode !== 'NoError') {
+    await Transaction.updateOne(
+      { chargePointId: conn.ref, connectorId: payload.connectorId, status: 'Active' },
+      {
+        $set: {
+          stationError: {
+            errorCode: payload.errorCode,
+            vendorErrorCode: payload.vendorErrorCode,
+            at: timestamp,
+          },
+        },
+      },
+    ).catch(() => undefined);
+  }
+
   if (payload.connectorId > 0) {
     // A connector registered by hand before the station came online already has
     // its code, and this leaves it alone — the sticker is on the charger. Only

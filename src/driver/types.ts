@@ -135,6 +135,8 @@ export interface ChargingSession {
    */
   minutesToFull?: number;
   stopReason?: string;
+  /** The station could not confirm the gun was connected; nothing was charged. */
+  plugError?: boolean;
   ebarimt?: EBarimtData;
   /** The receipt chosen at start; issued automatically when the session ends. */
   ebarimtRequest?: {
