@@ -168,7 +168,29 @@ function parseTags(tags: string[]): TagInfo {
   return info;
 }
 
+// TEMPORARY: show every station and connector as online and available in the
+// app and the kiosk, whatever its live state. Display only — starting a charge
+// still goes through the real checks. Set to false to restore live statuses.
+const FORCE_ALL_AVAILABLE = true;
+
 function toStation(cp: RawChargePoint, rawConnectors: RawConnector[], feePercent: number): Station {
+  const station = buildStation(cp, rawConnectors, feePercent);
+  if (!FORCE_ALL_AVAILABLE) return station;
+  const connectors = station.connectors.map((c) => ({
+    ...c,
+    status: 'Available' as ConnectorStatus,
+    availability: 'Operative' as const,
+  }));
+  return {
+    ...station,
+    isOnline: true,
+    connectors,
+    availableConnectors: connectors.length,
+    availability: 'available',
+  };
+}
+
+function buildStation(cp: RawChargePoint, rawConnectors: RawConnector[], feePercent: number): Station {
   const id = String(cp._id);
   const tags = cp.tags ?? [];
   const tagInfo = parseTags(tags);
