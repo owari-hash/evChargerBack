@@ -325,6 +325,7 @@ paymentsRouter.post(
     const payment = await refundPayment(
       await findOr404(req.params.id),
       (req.body as { note?: string }).note,
+      req.user?.email || req.user?.id || 'admin',
     );
     res.json(toPaymentView(payment));
   }),

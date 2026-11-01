@@ -130,6 +130,9 @@ const paymentSchema = new Schema(
     checkCount: { type: Number, default: 0 },
     paidAt: { type: Date },
     canceledAt: { type: Date },
+    refundedAt: { type: Date },
+    refundNote: { type: String },
+    refundedBy: { type: String },
     expiresAt: { type: Date, index: true },
     lastError: { type: String },
 

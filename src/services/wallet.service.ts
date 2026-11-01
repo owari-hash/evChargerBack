@@ -382,8 +382,11 @@ export async function debit(
   const wallet = (await Wallet.findOneAndUpdate(
     filter,
     {
-      $inc: { balance: -value, totalSpent: value },
-      $set: { lastSpendAt: now },
+      $inc: {
+        balance: -value,
+        ...(type === 'CHARGE' ? { totalSpent: value } : {}),
+      },
+      ...(type === 'CHARGE' ? { $set: { lastSpendAt: now } } : {}),
       $setOnInsert: { ownerType: owner.ownerType, ownerId: owner.ownerId, currency: 'MNT' },
     },
     {
@@ -409,7 +412,7 @@ export async function debit(
     if ((err as { code?: number }).code === 11000) {
       await Wallet.updateOne(
         { _id: wallet._id },
-        { $inc: { balance: value, totalSpent: -value } },
+        { $inc: { balance: value, ...(type === 'CHARGE' ? { totalSpent: -value } : {}) } },
       );
       return null;
     }

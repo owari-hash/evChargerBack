@@ -17,6 +17,7 @@ export type CsmsEventName =
   | 'payment.created'
   | 'payment.paid'
   | 'payment.canceled'
+  | 'payment.refunded'
   | 'wallet.credited'
   | 'wallet.debited'
   | 'command.result'

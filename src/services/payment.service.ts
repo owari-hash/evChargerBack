@@ -30,6 +30,7 @@ import { Transaction } from '../models/Transaction';
 import { QpayMerchantConfig } from '../models/QpayMerchantConfig';
 import { SavedCard } from '../models/SavedCard';
 import { bus } from '../realtime/events';
+import { logger, ebarimtLogger } from '../lib/logger';
 import { QpayError, qpayLogger } from './qpay/http';
 import * as merchant from './qpay/merchant.client';
 import * as quickqr from './qpay/quickqr.client';
@@ -37,8 +38,17 @@ import * as golomt from './golomt/client';
 import * as toki from './toki/client';
 import { TokiError, tokiLogger } from './toki/http';
 import { decryptSecret, encryptSecret } from './qpay/crypto';
-import { credit as creditWallet, debit as debitWallet } from './wallet.service';
-import { issueEBarimtForTransaction, issueEBarimtForPayment } from './ebarimt.service';
+import {
+  credit as creditWallet,
+  debit as debitWallet,
+  resolveWalletOwnerForIdTag,
+  type WalletOwner,
+} from './wallet.service';
+import {
+  issueEBarimtForTransaction,
+  issueEBarimtForPayment,
+  returnEBarimtReceipt,
+} from './ebarimt.service';
 import { sessionCost } from './pricing.service';
 import { store } from '../driver/store';
 
@@ -1332,96 +1342,124 @@ export async function cancelPayment(payment: PaymentDoc): Promise<PaymentDoc> {
   return payment;
 }
 
-/** Refund a settled payment leg. */
-export async function refundPayment(payment: PaymentDoc, note?: string): Promise<PaymentDoc> {
-  if (payment.status !== 'PAID') throw conflict('Only a PAID invoice can be refunded');
+/** Refund a settled payment leg and reverse wallet credit if applicable. */
+export async function refundPayment(
+  payment: PaymentDoc,
+  note?: string,
+  refundedBy?: string,
+): Promise<PaymentDoc> {
+  if (payment.status === 'REFUNDED') {
+    throw conflict('Энэ төлбөр аль хэдийн буцаагдсан байна');
+  }
+  if (payment.status !== 'PAID') {
+    throw conflict('Зөвхөн төлөгдсөн (PAID) төлбөрийг буцаах боломжтой');
+  }
 
+  // 1. Online provider refund where supported and configured
   if (payment.provider === 'TOKI') {
-    assertTokiEnabled();
     const transNumber = payment.tokiTransNumber || payment.tokiRequestId;
-    if (!transNumber) throw conflict('No settled Toki payment transNumber to refund');
-
-    try {
-      await toki.refundPayment({
-        merchantId: payment.merchantId ?? undefined,
-        transNumber,
-        amount: payment.paidAmount || payment.amount,
-      });
-    } catch (err) {
-      rethrowToki(err, 'refundPayment');
-    }
-
-    payment.status = 'REFUNDED';
-    await payment.save();
-
-    if (payment.purpose === 'WALLET_TOPUP' && payment.walletCreditedAt && payment.walletOwnerId) {
-      await debitWallet(
-        {
-          ownerType: (payment.walletOwnerType ?? 'USER') as WalletOwnerType,
-          ownerId: payment.walletOwnerId,
-        },
-        payment.paidAmount || payment.amount,
-        'ADJUSTMENT',
-        {
-          description: 'Цэнэглэлт буцаагдсан (Toki)',
-          idempotencyKey: `payment-refund:${String(payment._id)}`,
-          paymentId: String(payment._id),
-          createdBy: 'toki',
-        },
-        { allowNegative: true },
-      ).catch((err: unknown) =>
-        tokiLogger.error(
+    if (transNumber && env.TOKI_ENABLED) {
+      try {
+        await toki.refundPayment({
+          merchantId: payment.merchantId ?? undefined,
+          transNumber,
+          amount: payment.paidAmount || payment.amount,
+        });
+      } catch (err) {
+        tokiLogger.warn(
           { paymentId: String(payment._id), err: (err as Error).message },
-          'failed to reverse wallet credit for refunded Toki top-up',
-        ),
-      );
+          'Toki online refund failed; proceeding with system refund',
+        );
+      }
     }
-    return payment;
+  } else if (payment.provider === 'QPAY') {
+    const leg = payment.payments?.find((p) => !p.status || p.status.toUpperCase() === 'PAID');
+    if (leg && env.QPAY_ENABLED) {
+      try {
+        await merchant.refundPayment(leg.paymentId, note);
+      } catch (err) {
+        qpayLogger.warn(
+          { paymentId: String(payment._id), err: (err as Error).message },
+          'QPay online refund failed; proceeding with system refund',
+        );
+      }
+    }
   }
+  // Note: For QPAY_QUICKQR and GOLOMT, the bank refund is handled via bank/terminal portal,
+  // so we proceed with the system refund and wallet debit.
 
-  assertEnabled();
-  if (payment.provider === 'QPAY_QUICKQR') {
-    throw conflict('QuickQR invoices cannot be refunded through the API; refund them in QPay');
-  }
-  if (payment.provider === 'GOLOMT') {
-    throw conflict('Golomt card payments are refunded through the bank, not the API');
-  }
-  const leg = payment.payments?.find((p) => !p.status || p.status.toUpperCase() === 'PAID');
-  if (!leg) throw conflict('No settled QPay payment to refund');
-
-  try {
-    await merchant.refundPayment(leg.paymentId, note);
-  } catch (err) {
-    rethrow(err, 'refundPayment');
-  }
-
+  // 2. Mark payment as REFUNDED
   payment.status = 'REFUNDED';
+  const now = new Date();
+  payment.canceledAt = now;
+  (payment as unknown as Record<string, unknown>).refundedAt = now;
+  if (note) {
+    (payment as unknown as Record<string, unknown>).refundNote = note;
+  }
+  if (refundedBy) {
+    (payment as unknown as Record<string, unknown>).refundedBy = refundedBy;
+  }
   await payment.save();
 
-  // A refunded top-up must take the credited money back out of the wallet, or
-  // the driver keeps a balance QPay has already returned to them.
-  if (payment.purpose === 'WALLET_TOPUP' && payment.walletCreditedAt && payment.walletOwnerId) {
-    await debitWallet(
-      {
-        ownerType: (payment.walletOwnerType ?? 'USER') as WalletOwnerType,
-        ownerId: payment.walletOwnerId,
-      },
-      payment.paidAmount || payment.amount,
-      'ADJUSTMENT',
-      {
-        description: 'Цэнэглэлт буцаагдсан',
-        idempotencyKey: `payment-refund:${String(payment._id)}`,
-        paymentId: String(payment._id),
-        createdBy: 'qpay',
-      },
-      { allowNegative: true },
-    ).catch((err: unknown) =>
-      qpayLogger.error(
+  // 3. Return e-barimt if one was issued
+  if (payment.ebarimt?.receiptId && payment.ebarimt.status === 'SUCCESS') {
+    await returnEBarimtReceipt({
+      source: 'PAYMENT',
+      id: String(payment._id),
+      returnedBy: refundedBy || 'admin',
+    }).catch((err: unknown) =>
+      ebarimtLogger.warn(
         { paymentId: String(payment._id), err: (err as Error).message },
-        'failed to reverse wallet credit for refunded top-up',
+        'failed to return e-barimt receipt for refunded payment',
       ),
     );
   }
+
+  // 4. Reverse wallet credit (deduct amount from user wallet)
+  const amountToDebit = payment.paidAmount || payment.amount;
+  let owner: WalletOwner | null = null;
+  if (payment.walletOwnerId) {
+    owner = {
+      ownerType: (payment.walletOwnerType ?? 'USER') as WalletOwnerType,
+      ownerId: payment.walletOwnerId,
+    };
+  } else if (payment.userId) {
+    owner = {
+      ownerType: 'USER',
+      ownerId: payment.userId,
+    };
+  } else if (payment.idTag) {
+    owner = await resolveWalletOwnerForIdTag(payment.idTag);
+  }
+
+  if (owner && amountToDebit > 0 && (payment.purpose === 'WALLET_TOPUP' || payment.walletCreditedAt)) {
+    await debitWallet(
+      owner,
+      amountToDebit,
+      'ADJUSTMENT',
+      {
+        description: `Төлбөрийн буцаалт (${payment.senderInvoiceNo})${note ? ` · ${note}` : ''}`,
+        idempotencyKey: `payment-refund:${String(payment._id)}`,
+        paymentId: String(payment._id),
+        idTag: payment.idTag ?? undefined,
+        createdBy: refundedBy || 'admin',
+      },
+      { allowNegative: true },
+    ).catch((err: unknown) =>
+      logger.error(
+        { paymentId: String(payment._id), err: (err as Error).message },
+        'failed to reverse wallet credit for refunded payment',
+      ),
+    );
+  }
+
+  bus.emitEvent('payment.refunded', await cpIdFor(payment.chargePointId), {
+    paymentId: String(payment._id),
+    senderInvoiceNo: payment.senderInvoiceNo,
+    amount: payment.amount,
+    paidAmount: payment.paidAmount,
+    status: payment.status,
+  });
 
   return payment;
 }
