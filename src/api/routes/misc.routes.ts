@@ -10,6 +10,7 @@ import { MeterValue } from '../../models/MeterValue';
 import { Reservation } from '../../models/Reservation';
 import { SecurityEvent } from '../../models/Security';
 import { Transaction } from '../../models/Transaction';
+import { Payment } from '../../models/Payment';
 import { RESERVATION_STATES } from '../../models/enums';
 import { connectionManager } from '../../ocpp/manager';
 import {
@@ -222,6 +223,8 @@ statsRouter.get(
       transactions24h,
       energyAgg,
       criticalEvents,
+      refundedTxAgg,
+      refundedPayAgg,
     ] = await Promise.all([
       ChargePoint.countDocuments(cpFilter),
       ChargePoint.countDocuments(cpOnlineFilter),
@@ -243,7 +246,44 @@ statsRouter.get(
         },
       ]),
       clientOid ? 0 : SecurityEvent.countDocuments({ isCritical: true, acknowledged: false }),
+      Transaction.aggregate([
+        {
+          $match: {
+            status: 'Refunded',
+            ...(clientOid ? { clientId: clientOid } : {}),
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            count: { $sum: 1 },
+            amount: { $sum: { $ifNull: ['$refund.amount', '$cost'] } },
+          },
+        },
+      ]),
+      Payment.aggregate([
+        {
+          $match: {
+            status: 'REFUNDED',
+            ...(stationIds && stationIds.length > 0 ? { chargePointId: { $in: stationIds } } : {}),
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            count: { $sum: 1 },
+            amount: { $sum: { $ifNull: ['$paidAmount', '$amount'] } },
+          },
+        },
+      ]),
     ]);
+
+    const txRefundCount = refundedTxAgg[0]?.count ?? 0;
+    const txRefundAmount = refundedTxAgg[0]?.amount ?? 0;
+    const payRefundCount = clientOid ? 0 : (refundedPayAgg[0]?.count ?? 0);
+    const payRefundAmount = clientOid ? 0 : (refundedPayAgg[0]?.amount ?? 0);
+    const totalRefundCount = txRefundCount + payRefundCount;
+    const totalRefundAmount = txRefundAmount + payRefundAmount;
 
     res.json({
       chargePoints: { total: chargePoints, online, offline: chargePoints - online },
@@ -258,6 +298,8 @@ statsRouter.get(
       },
       energyLast24hKwh: Number((((energyAgg[0]?.energyWh ?? 0) as number) / 1000).toFixed(3)),
       revenueLast24h: Number(((energyAgg[0]?.cost ?? 0) as number).toFixed(2)),
+      refundedCount: totalRefundCount,
+      refundedAmount: totalRefundAmount,
       unacknowledgedCriticalSecurityEvents: criticalEvents,
     });
   }),

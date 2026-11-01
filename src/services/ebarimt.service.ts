@@ -1,3 +1,4 @@
+import { Types } from 'mongoose';
 import { Transaction, type TransactionDoc } from '../models/Transaction';
 import { Payment, type PaymentDoc } from '../models/Payment';
 import { EbarimtMerchant, ensureDefaultEbarimtMerchant } from '../models/EbarimtMerchant';
@@ -1085,18 +1086,50 @@ export async function listEbarimtReceipts(params: EbarimtListParams): Promise<Eb
     payFilter.chargePointId = params.chargePointId;
   }
   if (params.clientId) {
-    const clientStations = await ChargePoint.find({
-      $or: [{ clientId: params.clientId }, { linkedClientIds: params.clientId }],
-    }).select('_id cpId').lean();
-    const stationOids = clientStations.map((s) => s._id);
-    const stationCpIds = clientStations.map((s) => s.cpId).filter(Boolean);
-    const allStationIds = [...stationOids.map(String), ...stationCpIds];
+    const clientOid = Types.ObjectId.isValid(params.clientId)
+      ? new Types.ObjectId(params.clientId)
+      : null;
 
-    txFilter.$or = [
-      { clientId: params.clientId },
-      { chargePointId: { $in: allStationIds } },
-    ];
-    payFilter.chargePointId = { $in: allStationIds };
+    if (clientOid) {
+      const clientStations = await ChargePoint.find({
+        $or: [{ clientId: clientOid }, { linkedClientIds: clientOid }],
+      }).select('_id cpId ebarimtMerchantId').lean();
+
+      const stationOids = clientStations.map((s) => s._id as Types.ObjectId);
+      const clientDoc = await Client.findById(clientOid).select('ebarimtMerchantId').lean();
+      const merchantOids = [
+        clientDoc?.ebarimtMerchantId,
+        ...clientStations.map((s) => s.ebarimtMerchantId),
+      ].filter(Boolean) as Types.ObjectId[];
+
+      let merchantTins: string[] = [];
+      if (merchantOids.length > 0) {
+        const merchants = await EbarimtMerchant.find({ _id: { $in: merchantOids } }).select('merchantTin').lean();
+        merchantTins = merchants.map((m) => m.merchantTin).filter(Boolean) as string[];
+      }
+
+      const clientTxOr: Record<string, unknown>[] = [
+        { clientId: clientOid },
+        { chargePointId: { $in: stationOids } },
+      ];
+      if (merchantTins.length > 0) {
+        clientTxOr.push({ 'ebarimt.merchantTin': { $in: merchantTins } });
+      }
+
+      const clientTxCondition = { $or: clientTxOr };
+      txFilter.$and = [{ $or: clientTxOr }];
+
+      const clientTxIds = await Transaction.distinct('_id', clientTxCondition);
+      const payOr: Record<string, unknown>[] = [
+        { chargePointId: { $in: stationOids } },
+        { transactionId: { $in: clientTxIds } },
+      ];
+      if (merchantTins.length > 0) {
+        payOr.push({ 'ebarimt.merchantTin': { $in: merchantTins } });
+      }
+
+      payFilter.$and = [{ $or: payOr }];
+    }
   }
 
   if (params.q) {
@@ -1106,12 +1139,16 @@ export async function listEbarimtReceipts(params: EbarimtListParams): Promise<Eb
       { 'ebarimt.lottery': { $regex: term, $options: 'i' } },
       { 'ebarimt.customerNo': { $regex: term, $options: 'i' } },
       { 'ebarimt.customerTin': { $regex: term, $options: 'i' } },
-      { chargePointId: { $regex: term, $options: 'i' } },
     ];
     if (/^\d+$/.test(term)) {
       orTx.push({ _id: Number(term) });
     }
-    txFilter.$or = orTx;
+
+    if (txFilter.$and) {
+      (txFilter.$and as unknown[]).push({ $or: orTx });
+    } else {
+      txFilter.$or = orTx;
+    }
 
     const orPay: Record<string, unknown>[] = [
       { 'ebarimt.receiptId': { $regex: term, $options: 'i' } },
@@ -1120,7 +1157,12 @@ export async function listEbarimtReceipts(params: EbarimtListParams): Promise<Eb
       { 'ebarimt.customerTin': { $regex: term, $options: 'i' } },
       { senderInvoiceNo: { $regex: term, $options: 'i' } },
     ];
-    payFilter.$or = orPay;
+
+    if (payFilter.$and) {
+      (payFilter.$and as unknown[]).push({ $or: orPay });
+    } else {
+      payFilter.$or = orPay;
+    }
   }
 
   const [txDocs, payDocs] = await Promise.all([
