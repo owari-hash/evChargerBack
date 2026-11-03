@@ -207,11 +207,25 @@ paymentsRouter.get(
         $or: [{ clientId: clientOid }, { linkedClientIds: clientOid }],
       }).select('_id').lean();
       const stationIds = clientStations.map((s) => s._id);
-      const clientTxIds = await Transaction.distinct('_id', { clientId: clientOid });
-      filter.$or = [
-        { chargePointId: { $in: stationIds } },
-        { transactionId: { $in: clientTxIds } },
+      const clientTxIds = await Transaction.distinct('_id', {
+        $or: [
+          { clientId: clientOid },
+          ...(stationIds.length > 0 ? [{ chargePointId: { $in: stationIds } }] : []),
+        ],
+      });
+      const clientOr: Record<string, unknown>[] = [
+        ...(stationIds.length > 0 ? [{ chargePointId: { $in: stationIds } }] : []),
+        ...(clientTxIds.length > 0 ? [{ transactionId: { $in: clientTxIds } }] : []),
       ];
+      if (clientOr.length > 0) {
+        if (filter.$and) {
+          (filter.$and as unknown[]).push({ $or: clientOr });
+        } else {
+          filter.$and = [{ $or: clientOr }];
+        }
+      } else {
+        filter.chargePointId = new Types.ObjectId();
+      }
     }
     if (q.status) filter.status = q.status;
     if (q.provider) filter.provider = q.provider;
@@ -224,14 +238,28 @@ paymentsRouter.get(
       const phone = normalizePhone(term);
       const driver = phone ? await store.findUserByPhone(phone).catch(() => null) : null;
       if (driver) or.push({ userId: driver.id }, { walletOwnerId: driver.id });
-      filter.$or = or;
+      if (filter.$and) {
+        (filter.$and as unknown[]).push({ $or: or });
+      } else {
+        filter.$or = or;
+      }
     }
     if (q.chargePointId) filter.chargePointId = await requireChargePointRef(q.chargePointId);
     if (q.idTag) filter.idTag = q.idTag;
     if (q.transactionId !== undefined) filter.transactionId = q.transactionId;
     if (q.senderInvoiceNo) filter.senderInvoiceNo = q.senderInvoiceNo;
     if (q.from || q.to) {
-      filter.createdAt = { ...(q.from ? { $gte: q.from } : {}), ...(q.to ? { $lte: q.to } : {}) };
+      let toDate = q.to;
+      if (
+        toDate &&
+        toDate.getUTCHours() === 0 &&
+        toDate.getUTCMinutes() === 0 &&
+        toDate.getUTCSeconds() === 0 &&
+        toDate.getUTCMilliseconds() === 0
+      ) {
+        toDate = new Date(toDate.getTime() + 24 * 60 * 60 * 1000 - 1);
+      }
+      filter.createdAt = { ...(q.from ? { $gte: q.from } : {}), ...(toDate ? { $lte: toDate } : {}) };
     }
 
     const { skip, limit } = paginate(q);

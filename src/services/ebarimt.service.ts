@@ -1077,7 +1077,19 @@ export async function listEbarimtReceipts(params: EbarimtListParams): Promise<Eb
   if (params.from || params.to) {
     const range: Record<string, unknown> = {};
     if (params.from) range.$gte = params.from;
-    if (params.to) range.$lte = params.to;
+    if (params.to) {
+      let toDate = params.to;
+      if (
+        toDate &&
+        toDate.getUTCHours() === 0 &&
+        toDate.getUTCMinutes() === 0 &&
+        toDate.getUTCSeconds() === 0 &&
+        toDate.getUTCMilliseconds() === 0
+      ) {
+        toDate = new Date(toDate.getTime() + 24 * 60 * 60 * 1000 - 1);
+      }
+      range.$lte = toDate;
+    }
     txFilter['ebarimt.issuedAt'] = range;
     payFilter['ebarimt.issuedAt'] = range;
   }

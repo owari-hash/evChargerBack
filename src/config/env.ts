@@ -86,6 +86,8 @@ const schema = z.object({
   API_BASE_PATH: path('/api'),
 
   MONGODB_URI: z.string().default('mongodb://127.0.0.1:27017/csms'),
+  MONGODB_MAX_POOL_SIZE: int(100),
+  MONGODB_MIN_POOL_SIZE: int(10),
 
   JWT_SECRET: z.string().min(16, 'JWT_SECRET must be at least 16 characters'),
   JWT_EXPIRES_IN: z.string().default('12h'),

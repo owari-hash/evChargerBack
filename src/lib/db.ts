@@ -11,7 +11,8 @@ export async function connectDatabase(): Promise<typeof mongoose> {
 
   await mongoose.connect(env.MONGODB_URI, {
     serverSelectionTimeoutMS: 10_000,
-    maxPoolSize: 20,
+    maxPoolSize: env.MONGODB_MAX_POOL_SIZE,
+    minPoolSize: env.MONGODB_MIN_POOL_SIZE,
   });
 
   // Build indexes declared on the models. Safe to run on every boot, and a

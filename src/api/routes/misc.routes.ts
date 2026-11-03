@@ -210,9 +210,12 @@ statsRouter.get(
     };
 
     if (clientOid) {
-      txActiveFilter.clientId = clientOid;
-      tx24hFilter.clientId = clientOid;
-      txAggMatch.clientId = clientOid;
+      const clientMatch = stationIds && stationIds.length > 0
+        ? { $or: [{ clientId: clientOid }, { chargePointId: { $in: stationIds } }] }
+        : { clientId: clientOid };
+      Object.assign(txActiveFilter, clientMatch);
+      Object.assign(tx24hFilter, clientMatch);
+      Object.assign(txAggMatch, clientMatch);
     }
 
     const [
@@ -250,7 +253,11 @@ statsRouter.get(
         {
           $match: {
             status: 'Refunded',
-            ...(clientOid ? { clientId: clientOid } : {}),
+            ...(clientOid
+              ? stationIds && stationIds.length > 0
+                ? { $or: [{ clientId: clientOid }, { chargePointId: { $in: stationIds } }] }
+                : { clientId: clientOid }
+              : {}),
           },
         },
         {

@@ -58,18 +58,43 @@ export function normaliseOwner(ownerType: string, ownerId: string): WalletOwner 
   return { ownerType: type, ownerId: id };
 }
 
+interface CacheEntry<T> {
+  value: T;
+  expiresAt: number;
+}
+const walletOwnerCache = new Map<string, CacheEntry<WalletOwner | null>>();
+const internalTagCache = new Map<string, CacheEntry<boolean>>();
+
+export function invalidateIdTagWalletCache(idTag: string): void {
+  walletOwnerCache.delete(idTag);
+  internalTagCache.delete(idTag);
+}
+
 /**
  * Which wallet an idTag spends from: its own by default, or the wallet it has
  * been bound to (a driver account, so every card the driver owns shares one
  * balance). Returns null for a tag the CSMS has never seen.
  */
 export async function resolveWalletOwnerForIdTag(idTag: string): Promise<WalletOwner | null> {
-  const tag = await IdTag.findById(idTag).select('walletOwnerType walletOwnerId').lean();
-  if (!tag) return null;
-  if (tag.walletOwnerId) {
-    return normaliseOwner(tag.walletOwnerType ?? 'USER', tag.walletOwnerId);
+  const now = Date.now();
+  const cached = walletOwnerCache.get(idTag);
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
   }
-  return { ownerType: 'IDTAG', ownerId: idTag };
+
+  const tag = await IdTag.findById(idTag).select('walletOwnerType walletOwnerId').lean();
+  let owner: WalletOwner | null = null;
+  if (tag) {
+    if (tag.walletOwnerId) {
+      owner = normaliseOwner(tag.walletOwnerType ?? 'USER', tag.walletOwnerId);
+    } else {
+      owner = { ownerType: 'IDTAG', ownerId: idTag };
+    }
+  }
+
+  if (walletOwnerCache.size > 2000) walletOwnerCache.clear();
+  walletOwnerCache.set(idTag, { value: owner, expiresAt: now + 60_000 });
+  return owner;
 }
 
 /** Point an idTag at a wallet, so charges against the tag draw on that balance. */
@@ -79,6 +104,7 @@ export async function bindIdTagToWallet(idTag: string, owner: WalletOwner): Prom
     { $set: { walletOwnerType: owner.ownerType, walletOwnerId: owner.ownerId } },
   );
   if (result.matchedCount === 0) throw notFound(`idTag ${idTag} not found`);
+  invalidateIdTagWalletCache(idTag);
   await getOrCreateWallet(owner);
 }
 
@@ -89,6 +115,7 @@ export async function unbindIdTagFromWallet(idTag: string): Promise<void> {
     { $unset: { walletOwnerType: '', walletOwnerId: '' } },
   );
   if (result.matchedCount === 0) throw notFound(`idTag ${idTag} not found`);
+  invalidateIdTagWalletCache(idTag);
 }
 
 /** Every idTag bound to a wallet, so the account screen can list the driver's cards. */
@@ -629,21 +656,33 @@ export async function resettleSessionWallet(input: {
  * Whether an idTag belongs to an internal user / organization fleet that charges free.
  */
 export async function isInternalTag(idTag: string): Promise<boolean> {
+  const now = Date.now();
+  const cached = internalTagCache.get(idTag);
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+
   const tag = await IdTag.findById(idTag)
     .select('isInternal walletOwnerType walletOwnerId ownerPhone')
     .lean();
-  if (!tag) return false;
-  if (tag.isInternal) return true;
-  if (tag.walletOwnerType === 'CLIENT') return true;
-  if (tag.walletOwnerType === 'USER' && tag.walletOwnerId) {
-    const user = await store.findUserById(tag.walletOwnerId);
-    if (user?.isInternal) return true;
+  let result = false;
+  if (tag) {
+    if (tag.isInternal) {
+      result = true;
+    } else if (tag.walletOwnerType === 'CLIENT') {
+      result = true;
+    } else if (tag.walletOwnerType === 'USER' && tag.walletOwnerId) {
+      const user = await store.findUserById(tag.walletOwnerId);
+      if (user?.isInternal) result = true;
+    } else if (tag.ownerPhone) {
+      const user = await store.findUserByPhone(tag.ownerPhone);
+      if (user?.isInternal) result = true;
+    }
   }
-  if (tag.ownerPhone) {
-    const user = await store.findUserByPhone(tag.ownerPhone);
-    if (user?.isInternal) return true;
-  }
-  return false;
+
+  if (internalTagCache.size > 2000) internalTagCache.clear();
+  internalTagCache.set(idTag, { value: result, expiresAt: now + 60_000 });
+  return result;
 }
 
 /**

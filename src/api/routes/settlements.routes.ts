@@ -48,7 +48,19 @@ interface Earned {
 async function earnings(range: { from?: Date; to?: Date }, clientId?: string): Promise<Map<string, Earned>> {
   const stop: Record<string, Date> = {};
   if (range.from) stop.$gte = range.from;
-  if (range.to) stop.$lt = range.to;
+  if (range.to) {
+    let toDate = range.to;
+    if (
+      toDate &&
+      toDate.getUTCHours() === 0 &&
+      toDate.getUTCMinutes() === 0 &&
+      toDate.getUTCSeconds() === 0 &&
+      toDate.getUTCMilliseconds() === 0
+    ) {
+      toDate = new Date(toDate.getTime() + 24 * 60 * 60 * 1000);
+    }
+    stop.$lt = toDate;
+  }
 
   const rows = await Transaction.aggregate<Earned>([
     { $match: { status: 'Completed', ...(Object.keys(stop).length ? { stopTimestamp: stop } : {}) } },

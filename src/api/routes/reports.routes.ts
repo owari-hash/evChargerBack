@@ -62,7 +62,19 @@ reportsRouter.get(
 
     const stop: Record<string, Date> = {};
     if (q.from) stop.$gte = q.from;
-    if (q.to) stop.$lt = q.to;
+    if (q.to) {
+      let toDate = q.to;
+      if (
+        toDate &&
+        toDate.getUTCHours() === 0 &&
+        toDate.getUTCMinutes() === 0 &&
+        toDate.getUTCSeconds() === 0 &&
+        toDate.getUTCMilliseconds() === 0
+      ) {
+        toDate = new Date(toDate.getTime() + 24 * 60 * 60 * 1000);
+      }
+      stop.$lt = toDate;
+    }
     if (Object.keys(stop).length) txMatch.stopTimestamp = stop;
 
     if (stationFilterId) {
@@ -95,8 +107,15 @@ reportsRouter.get(
     ];
 
     if (targetClientId) {
+      const clientOid = new Types.ObjectId(targetClientId);
       pipeline.push({
-        $match: { effectiveClientId: new Types.ObjectId(targetClientId) },
+        $match: {
+          $or: [
+            { effectiveClientId: clientOid },
+            { 'cpDoc.clientId': clientOid },
+            { 'cpDoc.linkedClientIds': clientOid },
+          ],
+        },
       });
     }
 

@@ -19,6 +19,38 @@ interface ClientConnection {
 }
 
 const clients = new Set<ClientConnection>();
+const adminClients = new Set<ClientConnection>();
+const driverClients = new Map<string, Set<ClientConnection>>();
+
+function addClient(client: ClientConnection): void {
+  clients.add(client);
+  if (client.verified) {
+    if (client.role === 'admin') {
+      adminClients.add(client);
+    } else if (client.role === 'driver' && client.userId) {
+      let userSet = driverClients.get(client.userId);
+      if (!userSet) {
+        userSet = new Set();
+        driverClients.set(client.userId, userSet);
+      }
+      userSet.add(client);
+    }
+  }
+}
+
+function removeClient(client: ClientConnection): void {
+  clients.delete(client);
+  adminClients.delete(client);
+  if (client.userId) {
+    const userSet = driverClients.get(client.userId);
+    if (userSet) {
+      userSet.delete(client);
+      if (userSet.size === 0) {
+        driverClients.delete(client.userId);
+      }
+    }
+  }
+}
 
 function parseCookies(header?: string): Record<string, string> {
   const result: Record<string, string> = {};
@@ -112,18 +144,18 @@ export function attachNotificationSocketServer(server: HttpServer | HttpsServer)
         verified,
         isAlive: true,
       };
-      clients.add(client);
+      addClient(client);
 
       ws.on('pong', () => {
         client.isAlive = true;
       });
 
       ws.on('close', () => {
-        clients.delete(client);
+        removeClient(client);
       });
 
       ws.on('error', () => {
-        clients.delete(client);
+        removeClient(client);
       });
 
       // Send initial ready message
@@ -143,7 +175,7 @@ export function attachNotificationSocketServer(server: HttpServer | HttpsServer)
     for (const client of clients) {
       if (!client.isAlive) {
         client.ws.terminate();
-        clients.delete(client);
+        removeClient(client);
         continue;
       }
       client.isAlive = false;
@@ -173,17 +205,36 @@ export function broadcastNotification(
     at: new Date().toISOString(),
   });
 
-  for (const client of clients) {
-    if (client.ws.readyState !== WebSocket.OPEN) continue;
-    if (target.userId && client.userId && client.userId !== target.userId) continue;
-    if (target.role && target.role !== 'all' && client.role !== 'anonymous' && client.role !== target.role) {
-      continue;
-    }
+  const sendTo = (client: ClientConnection) => {
+    if (client.ws.readyState !== WebSocket.OPEN) return;
     try {
       client.ws.send(payload);
     } catch (err) {
       logger.warn({ err }, 'failed to send notification over websocket');
     }
+  };
+
+  if (target.role === 'admin') {
+    for (const client of adminClients) sendTo(client);
+    return;
+  }
+
+  if (target.userId) {
+    const userSockets = driverClients.get(target.userId);
+    if (userSockets) {
+      for (const client of userSockets) sendTo(client);
+    }
+    for (const client of adminClients) {
+      if (client.userId === target.userId) sendTo(client);
+    }
+    return;
+  }
+
+  for (const client of clients) {
+    if (target.role && target.role !== 'all' && client.role !== 'anonymous' && client.role !== target.role) {
+      continue;
+    }
+    sendTo(client);
   }
 }
 
@@ -194,6 +245,8 @@ const DRIVER_EVENTS = new Set<string>([
   'transaction.started',
   'transaction.stopped',
 ]);
+
+const idTagUserCache = new Map<string, { userId: string | undefined; expiresAt: number }>();
 
 /**
  * The signed-in driver a live event is about, or undefined when it is about
@@ -206,8 +259,19 @@ async function driverFor(event: CsmsEvent): Promise<string | undefined> {
     return data.ownerType === 'USER' && data.ownerId != null ? String(data.ownerId) : undefined;
   }
   if (typeof data.idTag !== 'string' || !data.idTag) return undefined;
+
+  const now = Date.now();
+  const cached = idTagUserCache.get(data.idTag);
+  if (cached && cached.expiresAt > now) {
+    return cached.userId;
+  }
+
   const user = await store.findUserByIdTag(data.idTag);
-  return user?.id ? String(user.id) : undefined;
+  const resolved = user?.id ? String(user.id) : undefined;
+
+  if (idTagUserCache.size > 2000) idTagUserCache.clear();
+  idTagUserCache.set(data.idTag, { userId: resolved, expiresAt: now + 5 * 60_000 });
+  return resolved;
 }
 
 /**
@@ -225,18 +289,33 @@ async function broadcastLiveEvent(event: CsmsEvent): Promise<void> {
     data: event.data,
   });
 
-  const hasDrivers = [...clients].some((c) => c.verified && c.role === 'driver');
-  const driverId = hasDrivers ? await driverFor(event) : undefined;
+  // 1. All verified admins receive every event directly
+  for (const client of adminClients) {
+    if (client.ws.readyState === WebSocket.OPEN) {
+      try {
+        client.ws.send(payload);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
 
-  for (const client of clients) {
-    if (client.ws.readyState !== WebSocket.OPEN || !client.verified) continue;
-    const allowed =
-      client.role === 'admin' || (client.role === 'driver' && driverId !== undefined && client.userId === driverId);
-    if (!allowed) continue;
-    try {
-      client.ws.send(payload);
-    } catch {
-      /* ignore */
+  // 2. Drivers only receive their own wallet and charge events
+  if (driverClients.size > 0 && DRIVER_EVENTS.has(event.event)) {
+    const driverId = await driverFor(event);
+    if (driverId) {
+      const userSockets = driverClients.get(driverId);
+      if (userSockets) {
+        for (const client of userSockets) {
+          if (client.ws.readyState === WebSocket.OPEN) {
+            try {
+              client.ws.send(payload);
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+      }
     }
   }
 }
