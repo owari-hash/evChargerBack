@@ -8,6 +8,7 @@ import { notFound } from '../../lib/errors';
 import { PAYMENT_PROVIDERS, PAYMENT_PURPOSES, PAYMENT_STATUSES, Payment } from '../../models/Payment';
 import { ChargePoint } from '../../models/ChargePoint';
 import { Transaction } from '../../models/Transaction';
+import { IdTag } from '../../models/IdTag';
 import { store } from '../../driver/store';
 import { normalizePhone } from '../../driver/validation';
 import {
@@ -207,15 +208,38 @@ paymentsRouter.get(
         $or: [{ clientId: clientOid }, { linkedClientIds: clientOid }],
       }).select('_id').lean();
       const stationIds = clientStations.map((s) => s._id);
-      const clientTxIds = await Transaction.distinct('_id', {
+
+      const clientTx = await Transaction.find({
         $or: [
           { clientId: clientOid },
           ...(stationIds.length > 0 ? [{ chargePointId: { $in: stationIds } }] : []),
         ],
-      });
+      }).select('_id idTag').lean();
+      const clientTxIds = clientTx.map((t) => t._id);
+      const txIdTags = clientTx.map((t) => t.idTag).filter(Boolean);
+
+      const clientTags = await IdTag.find({
+        $or: [
+          { clientId: clientOid },
+          { walletOwnerType: 'CLIENT', walletOwnerId: String(clientOid) },
+        ],
+      }).select('_id').lean();
+      const allTags = [...new Set([...clientTags.map((t) => String(t._id)), ...txIdTags])];
+
+      const drivers = await store.findUsersByIdTags(allTags).catch(() => new Map());
+      const driverUserIds = Array.from(drivers.keys());
+
       const clientOr: Record<string, unknown>[] = [
         ...(stationIds.length > 0 ? [{ chargePointId: { $in: stationIds } }] : []),
         ...(clientTxIds.length > 0 ? [{ transactionId: { $in: clientTxIds } }] : []),
+        { walletOwnerType: 'CLIENT', walletOwnerId: String(clientOid) },
+        ...(allTags.length > 0 ? [{ idTag: { $in: allTags } }] : []),
+        ...(driverUserIds.length > 0
+          ? [
+              { userId: { $in: driverUserIds } },
+              { walletOwnerId: { $in: driverUserIds } },
+            ]
+          : []),
       ];
       if (clientOr.length > 0) {
         if (filter.$and) {
