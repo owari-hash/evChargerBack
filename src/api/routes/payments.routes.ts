@@ -227,9 +227,10 @@ paymentsRouter.get(
       const allTags = [...new Set([...clientTags.map((t) => String(t._id)), ...txIdTags])];
 
       const drivers = await store.findUsersByIdTags(allTags).catch(() => new Map());
-      const driverUserIds = Array.from(drivers.keys());
+      const driverUserIds = Array.from(drivers.values()).map((u) => String(u.id)).filter(Boolean);
 
       const clientOr: Record<string, unknown>[] = [
+        { purpose: 'WALLET_TOPUP' },
         ...(stationIds.length > 0 ? [{ chargePointId: { $in: stationIds } }] : []),
         ...(clientTxIds.length > 0 ? [{ transactionId: { $in: clientTxIds } }] : []),
         { walletOwnerType: 'CLIENT', walletOwnerId: String(clientOid) },
