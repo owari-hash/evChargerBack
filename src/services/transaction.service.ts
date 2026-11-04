@@ -142,6 +142,7 @@ export async function startTransaction(
           vehicleVin: cp.lastVehicleInfo.vin,
           vehicleModel: cp.lastVehicleInfo.model,
           vehicleSoc: cp.lastVehicleInfo.soc,
+          startSocPercent: cp.lastVehicleInfo.soc,
           vehicleBatteryKwh: cp.lastVehicleInfo.batteryKwh,
           vehicleData: cp.lastVehicleInfo.data,
         }

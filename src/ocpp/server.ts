@@ -13,6 +13,7 @@ import { ChargePointConnection } from './connection';
 import { handleInboundCall } from './handlers';
 import { connectionManager } from './manager';
 import type { ConnectionContext } from './types';
+import { Connector } from '../models/Connector';
 
 const SUBPROTOCOL = 'ocpp1.6';
 
@@ -318,7 +319,6 @@ async function onConnection(
 }
 
 async function markConnectorsUnknown(chargePointId: Types.ObjectId): Promise<void> {
-  const { Connector } = await import('../models/Connector');
   await Connector.updateMany(
     { chargePointId, status: { $ne: 'Unavailable' } },
     { $set: { info: 'Charge point offline' } },

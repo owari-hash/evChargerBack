@@ -8,6 +8,7 @@ import { ChargePoint } from '../../models/ChargePoint';
 import { Connector } from '../../models/Connector';
 import { getCurrentUser, requireUser } from '../auth/session';
 import { DriverUser } from '../store';
+import { getOrCreateContactInfo } from '../../models/ContactInfo';
 import { guard, HOUR, notFound, parseQuery, route } from '../http';
 import { feedbackRoutes } from './feedback';
 
@@ -181,7 +182,6 @@ appRoutes.get(
 appRoutes.get(
   '/contact',
   route(async () => {
-    const { getOrCreateContactInfo } = await import('../../models/ContactInfo');
     const info = await getOrCreateContactInfo();
     return info.toJSON();
   }),

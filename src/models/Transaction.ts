@@ -28,6 +28,8 @@ const transactionSchema = new Schema(
     lastMeterWh: { type: Number },
     lastPowerW: { type: Number },
     lastSocPercent: { type: Number },
+    /** Battery % at the first SoC reading of the session; lastSocPercent is where it ended. */
+    startSocPercent: { type: Number },
     lastMeterValueAt: { type: Date },
 
     // Vehicle identification & telemetry (from GB/T BRM, ISO 15118, or DataTransfer)

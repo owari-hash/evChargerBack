@@ -373,7 +373,10 @@ export async function onDataTransfer(
   if (activeTx) {
     if (vin) activeTx.vehicleVin = vin;
     if (model) activeTx.vehicleModel = model;
-    if (soc !== undefined) activeTx.lastSocPercent = soc;
+    if (soc !== undefined) {
+      activeTx.lastSocPercent = soc;
+      if (activeTx.startSocPercent == null) activeTx.startSocPercent = soc;
+    }
     if (batteryKwh !== undefined) activeTx.vehicleBatteryKwh = batteryKwh;
     activeTx.vehicleData = parsed || (payload.data ? { raw: payload.data } : undefined);
     await activeTx.save().catch(() => undefined);

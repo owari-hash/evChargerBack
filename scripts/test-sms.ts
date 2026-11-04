@@ -2,7 +2,9 @@ import 'dotenv/config';
 process.env.JWT_SECRET ||= 'test-secret-at-least-32-characters-long!';
 
 async function main() {
-  const { sendSms, templates } = await import('../src/driver/notify');
+  // Loaded after the env defaults above, which the config reads on import.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { sendSms, templates } = require('../src/driver/notify') as typeof import('../src/driver/notify');
   const phone = process.argv[2] || '88111653';
   const kwh = process.argv[3] || '12.50';
   const usedAmount = process.argv[4] || '18,750';

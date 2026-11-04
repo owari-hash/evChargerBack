@@ -143,6 +143,14 @@ export async function storeMeterValues(
         }
       }
       if (socPercent !== undefined) tx.lastSocPercent = socPercent;
+      if (tx.startSocPercent == null) {
+        // The earliest SoC in this batch, not the newest, is where the car started.
+        const firstSoc = [...entries]
+          .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+          .map((e) => extract(e).socPercent)
+          .find((v) => v !== undefined);
+        if (firstSoc !== undefined) tx.startSocPercent = firstSoc;
+      }
       tx.lastMeterValueAt = latest.timestamp;
 
       // Check driver wallet balance to preemptively stop session before running into negative balance/debt
