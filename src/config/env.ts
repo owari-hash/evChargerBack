@@ -255,6 +255,19 @@ const schema = z.object({
   /** Development only: SMS codes and email links come back in API responses. */
   DEV_EXPOSE_TOKENS: bool(true),
 
+  // ---------- Google Maps (/app-api/maps) — app map tiles, traffic, routing ----------
+  /**
+   * Server-only key for the Routes API (traffic-aware routes). Never sent to
+   * clients. Unset: the app routes over the free OSRM server, without traffic.
+   */
+  GOOGLE_ROUTES_API_KEY: optRaw,
+  /**
+   * Key for the Map Tiles API. It ends up in every tile URL the app requests,
+   * so restrict it in Google Cloud to the Map Tiles API (and the app IDs).
+   * Unset: the app keeps the OpenStreetMap tiles, without a traffic layer.
+   */
+  GOOGLE_MAP_TILES_API_KEY: optRaw,
+
   // ---------- AI assistant (/app-api/assistant) — kiosk + app chat widget ----------
   /** Google Gemini — tried first when set (has a free tier). */
   GEMINI_API_KEY: optRaw,

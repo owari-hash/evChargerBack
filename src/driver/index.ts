@@ -7,6 +7,7 @@ import { assistantRouter } from './routes/assistant';
 import { authRoutes } from './routes/auth';
 import { sessionRoutes, stationRoutes, walletRoutes } from './routes/charging';
 import { feedbackRoutes } from './routes/feedback';
+import { mapsRoutes } from './routes/maps';
 import { driverNotificationsRoutes } from './routes/notifications';
 import { paymentRoutes } from './routes/payments';
 import { recordAccess } from '../services/analytics.service';
@@ -52,6 +53,7 @@ export function createDriverRouter(): Router {
   });
 
   router.use('/app', appRoutes);
+  router.use('/maps', mapsRoutes);
   router.use('/auth', authRoutes);
   router.use('/account', accountRoutes);
   router.use('/stations', stationRoutes);
