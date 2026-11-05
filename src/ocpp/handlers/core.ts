@@ -375,7 +375,8 @@ export async function onDataTransfer(
     if (model) activeTx.vehicleModel = model;
     if (soc !== undefined) {
       activeTx.lastSocPercent = soc;
-      if (activeTx.startSocPercent == null) activeTx.startSocPercent = soc;
+      // 0 means the BMS hasn't reported yet, not an empty battery.
+      if (!activeTx.startSocPercent && soc > 0) activeTx.startSocPercent = soc;
     }
     if (batteryKwh !== undefined) activeTx.vehicleBatteryKwh = batteryKwh;
     activeTx.vehicleData = parsed || (payload.data ? { raw: payload.data } : undefined);

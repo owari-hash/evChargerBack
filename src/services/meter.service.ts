@@ -143,13 +143,27 @@ export async function storeMeterValues(
         }
       }
       if (socPercent !== undefined) tx.lastSocPercent = socPercent;
-      if (tx.startSocPercent == null) {
-        // The earliest SoC in this batch, not the newest, is where the car started.
-        const firstSoc = [...entries]
+      // DC chargers report SoC 0 until the car's BMS handshake completes, so a
+      // 0 is "not known yet", never the start. A start already stored as 0 is
+      // repaired from the earliest real reading on record.
+      if (!tx.startSocPercent) {
+        const batchFirst = [...entries]
           .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
           .map((e) => extract(e).socPercent)
-          .find((v) => v !== undefined);
-        if (firstSoc !== undefined) tx.startSocPercent = firstSoc;
+          .find((v) => v !== undefined && v > 0);
+        if (batchFirst !== undefined) {
+          const earliest = await MeterValue.findOne({
+            transactionId: tx._id,
+            sampledValue: { $elemMatch: { measurand: 'SoC', numericValue: { $gt: 0 } } },
+          })
+            .sort({ timestamp: 1 })
+            .lean()
+            .catch(() => null);
+          const recorded = earliest?.sampledValue.find(
+            (sv) => sv.measurand === 'SoC' && (sv.numericValue ?? 0) > 0,
+          )?.numericValue;
+          tx.startSocPercent = recorded ?? batchFirst;
+        }
       }
       tx.lastMeterValueAt = latest.timestamp;
 

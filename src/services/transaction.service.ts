@@ -142,7 +142,8 @@ export async function startTransaction(
           vehicleVin: cp.lastVehicleInfo.vin,
           vehicleModel: cp.lastVehicleInfo.model,
           vehicleSoc: cp.lastVehicleInfo.soc,
-          startSocPercent: cp.lastVehicleInfo.soc,
+          // A 0 is a not-yet-reported BMS value; the first real reading fills it in.
+          startSocPercent: cp.lastVehicleInfo.soc ? cp.lastVehicleInfo.soc : undefined,
           vehicleBatteryKwh: cp.lastVehicleInfo.batteryKwh,
           vehicleData: cp.lastVehicleInfo.data,
         }

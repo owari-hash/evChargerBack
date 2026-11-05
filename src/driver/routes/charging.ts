@@ -37,6 +37,7 @@ import type { ChargingSession } from '../types';
 import { stationQuerySchema } from '../validation';
 import { isInternalTag } from '../../services/wallet.service';
 import { bus } from '../../realtime/events';
+import { getWatch, startWatch, stopWatch } from '../station-watch';
 import {
   checkTopUp,
   createTopUp,
@@ -186,6 +187,43 @@ stationRoutes.get(
           ? { ...session, isInternal: await isInternalTag(user.idTag) }
           : session,
     };
+  }),
+);
+
+/**
+ * "Notify me when a plug is free." GET reads the driver's watch on this
+ * station, POST sets it (for WATCH_TTL_MS), DELETE cancels it. It fires once,
+ * as a bell notification, when any plug here reports Available.
+ */
+stationRoutes.get(
+  '/:id/watch',
+  route(async (req) => {
+    const user = await getCurrentUser(req);
+    if (!user) return { watching: false, expiresAt: null };
+    const station = await getStation(req.params.id!);
+    if (!station) throw notFound(STATION_NOT_FOUND);
+    return getWatch(user.id, station.id);
+  }),
+);
+
+stationRoutes.post(
+  '/:id/watch',
+  route(async (req) => {
+    const user = await requireUser(req);
+    guard(req, `station-watch:${user.id}`, 30, HOUR);
+    const station = await getStation(req.params.id!);
+    if (!station) throw notFound(STATION_NOT_FOUND);
+    return startWatch(user.id, { id: station.id, cpId: station.cpId ?? station.id });
+  }),
+);
+
+stationRoutes.delete(
+  '/:id/watch',
+  route(async (req) => {
+    const user = await requireUser(req);
+    const station = await getStation(req.params.id!);
+    if (!station) throw notFound(STATION_NOT_FOUND);
+    return stopWatch(user.id, station.id);
   }),
 );
 

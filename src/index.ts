@@ -7,6 +7,7 @@ import { logger } from './lib/logger';
 import { createApp } from './api/app';
 import { attachOcppServer } from './ocpp/server';
 import { attachNotificationSocketServer } from './realtime/notification-socket';
+import { startStationWatchers } from './driver/station-watch';
 import { connectionManager } from './ocpp/manager';
 import { startMaintenanceJobs, stopMaintenanceJobs } from './services/maintenance.service';
 import { ensureDefaultQpayMerchantConfig } from './models';
@@ -65,6 +66,7 @@ async function main(): Promise<void> {
   attachOcppServer(server);
   attachNotificationSocketServer(server);
   startMaintenanceJobs();
+  startStationWatchers();
 
   server.listen(env.HTTP_PORT, env.HTTP_HOST, () => {
     const scheme = env.TLS_ENABLED ? 'https' : 'http';
