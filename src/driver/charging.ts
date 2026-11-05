@@ -98,6 +98,7 @@ interface RawChargePoint {
   chargePointModel?: string;
   tags?: string[];
   lastSeenAt?: Date;
+  forceAvailable?: boolean;
 }
 
 /**
@@ -173,7 +174,11 @@ function toStation(cp: RawChargePoint, rawConnectors: RawConnector[], feePercent
   const tags = cp.tags ?? [];
   const tagInfo = parseTags(tags);
   // The registry is keyed by the OCPP identifier the station connects with.
-  const isOnline = connectionManager.isOnline(cp.cpId);
+  const reallyOnline = connectionManager.isOnline(cp.cpId);
+  // An operator can switch on «Онлайн мэт харуулах»: drivers then see the
+  // station as online with every connector free while it is disconnected.
+  const faked = !reallyOnline && cp.forceAvailable === true;
+  const isOnline = reallyOnline || faked;
 
   // connectorId 0 addresses the charge point as a whole, not a physical socket.
   const connectors: StationConnector[] = rawConnectors
@@ -185,12 +190,13 @@ function toStation(cp: RawChargePoint, rawConnectors: RawConnector[], feePercent
       return {
         connectorId: c.connectorId,
         // An offline station cannot report a live status; show it as unavailable.
-        status:
-          isOnline && CONNECTOR_STATUSES.includes(rawStatus)
+        status: faked
+          ? 'Available'
+          : reallyOnline && CONNECTOR_STATUSES.includes(rawStatus)
             ? (rawStatus as ConnectorStatus)
             : 'Unavailable',
-        errorCode: c.errorCode ?? 'NoError',
-        availability: c.availability === 'Inoperative' ? 'Inoperative' : 'Operative',
+        errorCode: faked ? 'NoError' : (c.errorCode ?? 'NoError'),
+        availability: !faked && c.availability === 'Inoperative' ? 'Inoperative' : 'Operative',
         // The connector's own fields win: they are set by an operator in the
         // console and are what the QR sticker is printed from. Tags remain the
         // fallback for stations configured before those fields existed.

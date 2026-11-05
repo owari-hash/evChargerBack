@@ -94,6 +94,14 @@ const chargePointSchema = new Schema(
      */
     showOnKiosk: { type: Boolean, default: true },
     /**
+     * «Онлайн мэт харуулах»: the kiosk and the app show this station as online
+     * and every connector as available even while it is disconnected. The
+     * admin console keeps showing the true state, flagged as fake. Starting a
+     * charge still needs a live connection, so a driver trying one on an
+     * offline station gets the usual "station not connected" error.
+     */
+    forceAvailable: { type: Boolean, default: false },
+    /**
      * Time-of-day pricing — e.g. 13:00–17:00 at one rate, 17:00–20:00 at
      * another. `startMinute`/`endMinute` are minutes since local (Mongolia,
      * UTC+8) midnight, `startMinute < endMinute`, no wraparound past midnight

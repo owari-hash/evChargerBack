@@ -129,6 +129,8 @@ const createSchema = z.object({
   tariffPerKwh: z.number().nonnegative().optional(),
   /** Off hides the station from the kiosk and app lists. */
   showOnKiosk: z.boolean().optional(),
+  /** Show as online/available on the kiosk and app even while offline. */
+  forceAvailable: z.boolean().optional(),
   /** Time-of-day pricing; see the model for how zones are matched. */
   tariffZones: z
     .array(
