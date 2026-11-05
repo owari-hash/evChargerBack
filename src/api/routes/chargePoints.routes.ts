@@ -129,8 +129,6 @@ const createSchema = z.object({
   tariffPerKwh: z.number().nonnegative().optional(),
   /** Off hides the station from the kiosk and app lists. */
   showOnKiosk: z.boolean().optional(),
-  /** Show as online/available on the kiosk and app even while offline. */
-  forceAvailable: z.boolean().optional(),
   /** Time-of-day pricing; see the model for how zones are matched. */
   tariffZones: z
     .array(
@@ -281,6 +279,11 @@ chargePointsRouter.get(
  */
 const updateSchema = createSchema.partial().omit({ id: true }).extend({
   cpId: z.string().min(1).max(64).regex(/^[\w.:@-]+$/).optional(),
+  /**
+   * Show as online/available on the kiosk and app even while offline. Only
+   * for stations owned by FORCE_AVAILABLE_CLIENT_REGISTER.
+   */
+  forceAvailable: z.boolean().optional(),
   name: z.string().nullable().optional(),
   description: z.string().nullable().optional(),
   clientId: z.string().nullable().optional(),
@@ -322,6 +325,15 @@ async function assertClientRefs(ids: string[] | null | undefined): Promise<void>
   }
   const count = await Client.countDocuments({ _id: { $in: ids } });
   if (count !== new Set(ids).size) throw badRequest('One or more linked clients not found');
+}
+
+/** The only client whose stations may use «Онлайн мэт харуулах». */
+const FORCE_AVAILABLE_CLIENT_REGISTER = '6688845';
+
+async function isForceAvailableClient(id: unknown): Promise<boolean> {
+  if (!id || !isValidObjectId(id)) return false;
+  const cl = await Client.findById(id).select('businessRegister').lean();
+  return cl?.businessRegister?.trim() === FORCE_AVAILABLE_CLIENT_REGISTER;
 }
 
 async function clientSummary(id: unknown): Promise<ClientSummary | null> {
@@ -398,6 +410,19 @@ chargePointsRouter.patch(
       }
       if (value === null) $unset[key] = '';
       else $set[key] = value;
+    }
+
+    // «Онлайн мэт харуулах» is allowed only on one client's stations. Turning it
+    // on elsewhere is refused; moving a station to another client clears it.
+    const ownerId = 'clientId' in $unset ? null : ($set.clientId ?? cp.clientId);
+    const ownerAllowed = await isForceAvailableClient(ownerId);
+    if (body.forceAvailable === true && !ownerAllowed) {
+      throw badRequest(
+        `«Онлайн мэт харуулах» зөвхөн ${FORCE_AVAILABLE_CLIENT_REGISTER} регистртэй харилцагчийн станцад боломжтой`,
+      );
+    }
+    if (!ownerAllowed && body.forceAvailable === undefined && cp.forceAvailable) {
+      $set.forceAvailable = false;
     }
 
     let newKey: string | undefined;
