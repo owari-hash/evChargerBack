@@ -808,7 +808,12 @@ interface GolomtTopUpInput {
  * top-ups once the payment succeeds.
  */
 export async function createGolomtTopUp(
-  input: GolomtTopUpInput & { saveCard?: boolean; channel?: 'CARD' | 'SOCIALPAY' },
+  input: GolomtTopUpInput & {
+    saveCard?: boolean;
+    channel?: 'CARD' | 'SOCIALPAY';
+    /** Who opened the card page; decides where the bank sends the driver back. */
+    client?: 'web' | 'app';
+  },
 ): Promise<PaymentDoc> {
   const channel = input.channel ?? 'CARD';
   if (!env.GOLOMT_ENABLED) throw serviceUnavailable('Картаар төлөх үйлчилгээ түр боломжгүй байна');
@@ -838,7 +843,7 @@ export async function createGolomtTopUp(
     const res = await golomt.createInvoice({
       transactionId,
       amount,
-      callback: golomtReturnUrl(transactionId),
+      callback: golomtReturnUrl(transactionId, input.client),
       genToken: saveCard,
       socialPay: channel === 'SOCIALPAY',
     });

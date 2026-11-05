@@ -392,9 +392,12 @@ export function qpayCallbackUrl(paymentId: string, secret: string): string {
  * which payment to re-check with the bank — the query string Golomt appends is
  * never trusted on its own.
  */
-export function golomtReturnUrl(transactionId: string): string {
+export function golomtReturnUrl(transactionId: string, client: 'web' | 'app' = 'web'): string {
   const origin = env.GOLOMT_CALLBACK_BASE_URL ?? env.PUBLIC_BASE_URL;
-  return `${origin}${env.DRIVER_API_BASE_PATH}/payments/golomt/return/${transactionId}`;
+  // The app's return is a separate path, not a query flag: Golomt appends
+  // its own query string to this URL.
+  const leg = client === 'app' ? 'return-app' : 'return';
+  return `${origin}${env.DRIVER_API_BASE_PATH}/payments/golomt/${leg}/${transactionId}`;
 }
 
 /** Base URL for Toki API depending on mode or explicit override */

@@ -478,6 +478,7 @@ const topUpSchema = z.object({
   cardId: z.string().regex(/^[a-f0-9]{24}$/i, 'Карт олдсонгүй').optional(),
   tokiMethod: z.enum(['QR', 'PHONE', 'DEEPLINK']).optional(),
   tokiPhoneNo: z.string().optional(),
+  client: z.enum(['web', 'app']).optional(),
 });
 
 /**
@@ -492,7 +493,10 @@ walletRoutes.post(
     guard(req, 'wallet-topup', 12, 10 * MINUTE);
     guard(req, 'wallet-topup-hourly', 40, HOUR);
 
-    const { amount, method, saveCard, cardId, tokiMethod, tokiPhoneNo } = parseBody(req, topUpSchema);
+    const { amount, method, saveCard, cardId, tokiMethod, tokiPhoneNo, client } = parseBody(
+      req,
+      topUpSchema,
+    );
     const config = walletConfig();
     const methodEnabled =
       method === 'card'
@@ -532,6 +536,7 @@ walletRoutes.post(
       cardId,
       tokiMethod,
       tokiPhoneNo,
+      client,
     });
 
     // No QR — the client sends the driver to `paymentUrl` (or the deeplink).

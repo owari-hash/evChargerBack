@@ -99,6 +99,8 @@ export async function createTopUp(input: {
   cardId?: string;
   tokiMethod?: 'QR' | 'PHONE' | 'DEEPLINK';
   tokiPhoneNo?: string;
+  /** `app` sends the driver back into the app after the bank's card page. */
+  client?: 'web' | 'app';
 }): Promise<Record<string, unknown>> {
   const owner = ownerFor(input.userId);
   // The wallet has to exist before the payment settles and credits it.
@@ -120,6 +122,7 @@ export async function createTopUp(input: {
               ...golomtInput,
               saveCard: input.method === 'card' && input.saveCard,
               channel: input.method === 'socialpay' ? 'SOCIALPAY' : 'CARD',
+              client: input.client,
             });
       return toDriverView(payment);
     } catch (err) {
