@@ -205,10 +205,18 @@ async function enforcePrepaidBalanceCap(tx: TransactionDoc): Promise<void> {
     if (isInternal) return; // Do not cap internal sessions; preserve real energyWh, feeAmount, cost for admin reports
     const owner = await resolveWalletOwnerForIdTag(tx.idTag);
     if (owner && owner.ownerType !== 'CLIENT') {
-      const cap =
-        typeof tx.maxAllowedCost === 'number' && tx.maxAllowedCost > 0
-          ? tx.maxAllowedCost
-          : await balanceOf(owner);
+      const balance = await balanceOf(owner);
+      const cap = Math.max(
+        typeof tx.maxAllowedCost === 'number' && tx.maxAllowedCost > 0 ? tx.maxAllowedCost : 0,
+        balance,
+      );
+      if (cap > (tx.maxAllowedCost ?? 0)) {
+        tx.maxAllowedCost = cap;
+        const tariff = tx.tariffPerKwh ?? 1000;
+        if (tariff > 0) {
+          tx.maxAllowedEnergyKwh = Math.floor((cap / tariff) * 1000) / 1000;
+        }
+      }
       capCostToBalance(tx, cap);
     }
   } catch (err) {

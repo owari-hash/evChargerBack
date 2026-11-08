@@ -129,6 +129,87 @@ export async function idTagsForWallet(owner: WalletOwner): Promise<string[]> {
   return tags.map((t) => String(t._id));
 }
 
+/**
+ * Update prepaid limit (maxAllowedCost, maxAllowedEnergyKwh) on any currently active
+ * transactions for this wallet owner. This ensures that when a driver tops up their
+ * wallet while actively charging, the session is not prematurely cut off by the old limit.
+ */
+export async function syncActiveTransactionsForWallet(
+  owner: WalletOwner,
+  currentBalance: number,
+): Promise<void> {
+  try {
+    if (owner.ownerType === 'CLIENT') return;
+    const balance = Math.max(0, currentBalance);
+    const tags: string[] = [];
+    if (owner.ownerType === 'IDTAG') {
+      tags.push(owner.ownerId);
+    } else if (owner.ownerType === 'USER') {
+      const boundTags = await IdTag.find({
+        walletOwnerType: owner.ownerType,
+        walletOwnerId: owner.ownerId,
+      })
+        .select('_id')
+        .lean();
+      tags.push(...boundTags.map((t) => String(t._id)));
+      tags.push(owner.ownerId);
+    }
+
+    if (tags.length === 0) return;
+
+    const activeTxs = await Transaction.find({
+      idTag: { $in: tags },
+      status: 'Active',
+    });
+
+    for (const tx of activeTxs) {
+      const tariff = tx.tariffPerKwh ?? 1000;
+      const newMaxAllowedCost = balance;
+      const newMaxAllowedEnergyKwh =
+        tariff > 0 ? Math.floor((balance / tariff) * 1000) / 1000 : undefined;
+
+      const oldMaxCost = tx.maxAllowedCost ?? 0;
+      const oldMaxKwh = tx.maxAllowedEnergyKwh ?? 0;
+
+      // Update if limits increased or were not set
+      if (
+        tx.maxAllowedCost == null ||
+        newMaxAllowedCost > oldMaxCost ||
+        tx.maxAllowedEnergyKwh == null ||
+        (newMaxAllowedEnergyKwh !== undefined && newMaxAllowedEnergyKwh > oldMaxKwh)
+      ) {
+        walletLogger.info(
+          {
+            txId: tx._id,
+            idTag: tx.idTag,
+            oldMaxAllowedCost: tx.maxAllowedCost,
+            newMaxAllowedCost,
+            oldMaxAllowedEnergyKwh: tx.maxAllowedEnergyKwh,
+            newMaxAllowedEnergyKwh,
+          },
+          'Updating active transaction prepaid limit after wallet credit',
+        );
+
+        await Transaction.updateOne(
+          { _id: tx._id },
+          {
+            $set: {
+              maxAllowedCost: newMaxAllowedCost,
+              maxAllowedEnergyKwh: newMaxAllowedEnergyKwh,
+              stoppedRemotely: false,
+            },
+          },
+        );
+      }
+    }
+  } catch (err) {
+    walletLogger.error(
+      { err: (err as Error).message, owner },
+      'Failed to sync active transactions limit after wallet credit',
+    );
+  }
+}
+
 export async function resolvePhoneForWalletOwner(
   owner: WalletOwner,
   ref?: LedgerRef,
@@ -298,6 +379,9 @@ export async function credit(
       duplicate: true,
     };
   }
+
+  // Update active transactions limit so ongoing charging sessions are not prematurely terminated
+  await syncActiveTransactionsForWallet(owner, wallet.balance ?? 0);
 
   bus.emitEvent('wallet.credited', await cpIdFor(ref.chargePointId), {
     walletId: String(wallet._id),

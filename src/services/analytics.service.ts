@@ -178,7 +178,7 @@ export async function ensureBaselineAccessLogs(): Promise<void> {
       '/download',
       '/account',
       '/charging',
-      '/api/stations',
+      '/map',
     ];
 
     const browsers = ['Safari', 'Chrome', 'Firefox', 'iOS App', 'Android App'];
@@ -249,7 +249,7 @@ export async function getAnalyticsOverview(daysCount: number = 7) {
   const sinceDate = new Date(now.getTime() - (days - 1) * 24 * 60 * 60 * 1000);
   const { dateStr: sinceStr } = getMongoliaDateAndHour(sinceDate);
 
-  const nonApiFilter = { path: { $not: /^\/(api|app-api)\// } };
+  const nonApiFilter = { path: { $not: { $regex: '^/(api|app-api)/' } } };
   const matchRange = { date: { $gte: sinceStr, $lte: todayStr }, ...nonApiFilter };
 
   // 1. Overall & Platform breakdown
@@ -332,7 +332,7 @@ export async function getAnalyticsOverview(daysCount: number = 7) {
 
   // Calculate distinct unique today
   const todayUniqueResult = await AccessLog.distinct('visitorId', { date: todayStr });
-  const todayUnique = todayUniqueResult.length;
+  const todayUnique = Array.isArray(todayUniqueResult) ? todayUniqueResult.length : 0;
 
   const trendPct =
     yesterdayVisits > 0
@@ -417,21 +417,32 @@ export async function getAnalyticsOverview(daysCount: number = 7) {
     pct: Math.round((b.count / safeTotal) * 100),
   }));
 
-  const topPages = topPagesAgg.map((p: any) => ({
-    path: p._id,
-    count: p.count,
-    pct: Math.round((p.count / safeTotal) * 100),
+  const topPages = (topPagesAgg || []).map((p: any) => ({
+    path: p._id || '/',
+    count: p.count || 0,
+    pct: Math.round(((p.count || 0) / safeTotal) * 100),
   }));
 
-  const recentVisits = recentDocs.map((r: any) => ({
-    id: String(r._id),
-    timestamp: r.timestamp.toISOString(),
-    platform: r.platform,
-    path: r.path,
-    device: r.device,
-    browser: r.browser,
-    os: r.os,
-  }));
+  const recentVisits = (recentDocs || []).map((r: any) => {
+    let isoTimestamp = new Date().toISOString();
+    if (r.timestamp instanceof Date && !isNaN(r.timestamp.getTime())) {
+      isoTimestamp = r.timestamp.toISOString();
+    } else if (typeof r.timestamp === 'string' || typeof r.timestamp === 'number') {
+      const d = new Date(r.timestamp);
+      if (!isNaN(d.getTime())) {
+        isoTimestamp = d.toISOString();
+      }
+    }
+    return {
+      id: String(r._id),
+      timestamp: isoTimestamp,
+      platform: r.platform || 'web',
+      path: r.path || '/',
+      device: r.device || 'desktop',
+      browser: r.browser || 'Other',
+      os: r.os || 'Other',
+    };
+  });
 
   return {
     summary: {

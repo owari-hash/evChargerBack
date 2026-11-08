@@ -446,6 +446,8 @@ interface RawTransaction {
   energyCost?: number;
   feeAmount?: number;
   feePercent?: number;
+  maxAllowedCost?: number;
+  maxAllowedEnergyKwh?: number;
   lastPowerW?: number;
   lastSocPercent?: number;
   stopReason?: string | null;
@@ -496,6 +498,8 @@ function toSession(tx: RawTransaction): ChargingSession {
     energyCost: tx.energyCost,
     feeAmount: tx.feeAmount,
     feePercent: tx.feePercent,
+    maxAllowedCost: tx.maxAllowedCost,
+    maxAllowedEnergyKwh: tx.maxAllowedEnergyKwh,
     lastPowerW: tx.lastPowerW,
     lastSocPercent: tx.lastSocPercent,
     stopReason: tx.stopReason ?? undefined,

@@ -20,7 +20,7 @@ import { asyncHandler, requireAuth, requireOperator, validate } from '../middlew
  * adopts these rows rather than duplicating them — the printed code survives.
  */
 export const connectorAdminRouter = Router();
-connectorAdminRouter.use(requireAuth);
+connectorAdminRouter.use(['/charge-points', '/connectors'], requireAuth);
 
 const connectorInput = z.object({
   connectorId: z.number().int().min(1, 'Холбогчийн дугаар 1-ээс эхэлнэ').max(99),

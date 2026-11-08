@@ -126,6 +126,8 @@ export interface ChargingSession {
   energyCost?: number;
   feeAmount?: number;
   feePercent?: number;
+  maxAllowedCost?: number;
+  maxAllowedEnergyKwh?: number;
   lastPowerW?: number;
   lastSocPercent?: number;
   /**

@@ -178,10 +178,31 @@ export async function storeMeterValues(
           const owner = await resolveWalletOwnerForIdTag(tx.idTag);
           // CLIENT ownerType and internal cards charge without prepaid balance cut-off
           if (!isInternal && owner && owner.ownerType !== 'CLIENT') {
-            const cap =
+            const currentBalance = await balanceOf(owner);
+            let cap =
               typeof tx.maxAllowedCost === 'number' && tx.maxAllowedCost > 0
                 ? tx.maxAllowedCost
-                : await balanceOf(owner);
+                : currentBalance;
+
+            // If user topped up wallet during charging, refresh maxAllowedCost and maxAllowedEnergyKwh
+            if (currentBalance > cap) {
+              cap = currentBalance;
+              tx.maxAllowedCost = cap;
+              const tariff = tx.tariffPerKwh ?? 1000;
+              if (tariff > 0) {
+                tx.maxAllowedEnergyKwh = Math.floor((cap / tariff) * 1000) / 1000;
+              }
+              ocppLogger.info(
+                {
+                  txId: tx._id,
+                  cpId,
+                  idTag: tx.idTag,
+                  newCap: cap,
+                  maxAllowedEnergyKwh: tx.maxAllowedEnergyKwh,
+                },
+                'Wallet balance topped up during active session; increased prepaid limit',
+              );
+            }
 
             // Strictly prevent session cost from exceeding wallet limit
             capCostToBalance(tx, cap);
@@ -223,6 +244,14 @@ export async function storeMeterValues(
                       'Failed to send RemoteStopTransaction for exhausted balance',
                     );
                   });
+              }
+            } else {
+              // Balance is sufficient; reset remote stop flag or previous attempt if driver topped up
+              if (tx.stoppedRemotely) {
+                tx.stoppedRemotely = false;
+              }
+              if (lastRemoteStopAttempts.has(tx._id)) {
+                lastRemoteStopAttempts.delete(tx._id);
               }
             }
           }
