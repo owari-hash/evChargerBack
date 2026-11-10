@@ -410,7 +410,7 @@ function chargingNow(c: StationConnector): boolean {
  * reading left over from a finished charge is dropped rather than shown.
  */
 async function withChargeEstimates(stations: Station[]): Promise<Station[]> {
-  return Promise.all(
+  const withFull = await Promise.all(
     stations.map(async (station) => {
       if (!station.connectors.some((c) => c.lastSocPercent != null || chargingNow(c))) return station;
       const connectors = await Promise.all(
@@ -427,6 +427,86 @@ async function withChargeEstimates(stations: Station[]): Promise<Station[]> {
       return { ...station, connectors };
     }),
   );
+  return Promise.all(withFull.map(withWaitEstimate));
+}
+
+/** Typical session length per station, refreshed every few minutes. */
+const typicalCache = new Map<string, { at: number; minutes: number | undefined }>();
+const TYPICAL_TTL_MS = 10 * 60_000;
+/** Below this many finished sessions the history says too little. */
+const TYPICAL_MIN_SAMPLES = 5;
+/** When a session has already outrun the usual length, assume it ends soon. */
+const OVERDUE_MINUTES = 5;
+
+async function typicalSessionMinutes(stationId: string): Promise<number | undefined> {
+  const now = Date.now();
+  const hit = typicalCache.get(stationId);
+  if (hit && now - hit.at < TYPICAL_TTL_MS) return hit.minutes;
+  let minutes: number | undefined;
+  try {
+    const recent = await Transaction.find({
+      chargePointId: stationId,
+      stopTimestamp: { $exists: true },
+    })
+      .sort({ startTimestamp: -1 })
+      .limit(30)
+      .select('startTimestamp stopTimestamp')
+      .lean<Array<{ startTimestamp: Date; stopTimestamp?: Date }>>();
+    const durations = recent
+      .map((t) => (t.stopTimestamp ? (t.stopTimestamp.getTime() - t.startTimestamp.getTime()) / 60_000 : NaN))
+      .filter((m) => Number.isFinite(m) && m >= 3 && m <= 12 * 60)
+      .sort((a, b) => a - b);
+    if (durations.length >= TYPICAL_MIN_SAMPLES) minutes = durations[Math.floor(durations.length / 2)];
+  } catch (err) {
+    driverLogger.warn({ err, stationId }, 'typical session length failed');
+  }
+  if (typicalCache.size > 500) typicalCache.clear();
+  typicalCache.set(stationId, { at: now, minutes });
+  return minutes;
+}
+
+/** Start time of each running transaction, for "how long has this car been here". */
+async function sessionStarts(ids: number[]): Promise<Map<number, number>> {
+  if (!ids.length) return new Map();
+  const rows = await Transaction.find({ _id: { $in: ids } })
+    .select('startTimestamp')
+    .lean<Array<{ _id: number; startTimestamp: Date }>>();
+  return new Map(rows.map((r) => [r._id, r.startTimestamp.getTime()]));
+}
+
+/**
+ * Per charging gun: minutes left (battery estimate first, else typical session
+ * length minus time so far). Station `waitMinutes` is the soonest one, set
+ * only when no plug is free.
+ */
+async function withWaitEstimate(station: Station): Promise<Station> {
+  const charging = station.connectors.filter(chargingNow);
+  if (!charging.length) return station;
+  try {
+    const needFallback = charging.filter((c) => c.minutesToFull == null);
+    const [typical, starts] = needFallback.length
+      ? await Promise.all([
+          typicalSessionMinutes(station.id),
+          sessionStarts(needFallback.map((c) => c.currentTransactionId!)),
+        ])
+      : [undefined, new Map<number, number>()];
+    const now = Date.now();
+    const connectors = station.connectors.map((c) => {
+      if (!chargingNow(c)) return c;
+      if (c.minutesToFull != null) return { ...c, minutesLeft: Math.round(c.minutesToFull) };
+      const start = starts.get(c.currentTransactionId!);
+      if (typical === undefined || start === undefined) return c;
+      const left = Math.round(typical - (now - start) / 60_000);
+      return { ...c, minutesLeft: Math.max(OVERDUE_MINUTES, left) };
+    });
+    const lefts = connectors.map((c) => c.minutesLeft).filter((m): m is number => typeof m === 'number');
+    const waitMinutes =
+      station.availability === 'busy' && lefts.length ? Math.min(...lefts) : undefined;
+    return { ...station, connectors, ...(waitMinutes !== undefined ? { waitMinutes } : {}) };
+  } catch (err) {
+    driverLogger.warn({ err, stationId: station.id }, 'wait estimate failed');
+    return station;
+  }
 }
 
 // ---------------------------------------------------------------------------

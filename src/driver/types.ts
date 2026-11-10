@@ -33,6 +33,12 @@ export interface StationConnector {
   lastSocPercent?: number;
   /** While a car charges on this gun and reports its battery: minutes to full. */
   minutesToFull?: number;
+  /**
+   * While a car charges on this gun: estimated minutes until it is done — the
+   * battery estimate when there is one, else from how long sessions here
+   * usually last. Never below 5; absent when nothing supports a guess.
+   */
+  minutesLeft?: number;
   statusTimestamp?: string;
   /**
    * Another driver has this gun: they scanned it and have it open, a start
@@ -75,6 +81,12 @@ export interface Station {
   maxPowerKw?: number;
   connectorTypes: ConnectorType[];
   availability: StationAvailability;
+  /**
+   * Busy stations only: estimated minutes until a plug frees up. From the
+   * battery reading when the car reports one, otherwise from how long
+   * sessions at this station usually last.
+   */
+  waitMinutes?: number;
   /** Kilometres from the requested origin, when the query supplied one. */
   distanceKm?: number;
 }

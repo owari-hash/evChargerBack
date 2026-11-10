@@ -110,6 +110,8 @@ const driverUserSchema = new Schema(
     // Мэдээ ids this driver has dismissed, on any device — so one never pops
     // up again after a sign-in, a reinstall or on the other phone.
     seenAnnouncements: { type: [String], default: undefined },
+    // Station ids (ObjectId strings) the driver starred.
+    favoriteStations: { type: [String], default: undefined },
     locale: { type: String, default: 'en' },
     tokenVersion: { type: Number, default: 0 },
     lastLoginAt: { type: Date },
@@ -154,6 +156,7 @@ export interface DriverUserDoc {
   _id: unknown;
   pendingGuides?: string[];
   seenAnnouncements?: string[];
+  favoriteStations?: string[];
   email?: string;
   phone?: string;
   name?: string;
@@ -446,4 +449,32 @@ export const store = {
     await ready();
     return VerificationToken.countDocuments({ userId, kind, createdAt: { $gte: since } });
   },
+
+  /** The driver's starred station ids, newest first. */
+  async listFavorites(userId: string): Promise<string[]> {
+    if (!isObjectId(userId)) return [];
+    await ready();
+    const doc = await DriverUser.findById(userId).select('favoriteStations').lean<DriverUserDoc>();
+    return [...(doc?.favoriteStations ?? [])].reverse();
+  },
+
+  /** Stars a station; a driver can keep at most FAVORITES_MAX. Returns the new list. */
+  async addFavorite(userId: string, stationId: string): Promise<string[] | 'full'> {
+    if (!isObjectId(userId)) return [];
+    await ready();
+    const current = await this.listFavorites(userId);
+    if (current.includes(stationId)) return current;
+    if (current.length >= FAVORITES_MAX) return 'full';
+    await DriverUser.updateOne({ _id: userId }, { $addToSet: { favoriteStations: stationId } });
+    return this.listFavorites(userId);
+  },
+
+  async removeFavorite(userId: string, stationId: string): Promise<string[]> {
+    if (!isObjectId(userId)) return [];
+    await ready();
+    await DriverUser.updateOne({ _id: userId }, { $pull: { favoriteStations: stationId } });
+    return this.listFavorites(userId);
+  },
 };
+
+export const FAVORITES_MAX = 50;

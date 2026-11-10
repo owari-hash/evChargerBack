@@ -3,7 +3,8 @@ import { z } from 'zod';
 import { clearedPinLock, hashPin, verifyPin } from '../auth/pin';
 import { requireUser, setSessionCookie, toPublicUser } from '../auth/session';
 import { badRequest, conflict, guard, HOUR, notFound, parseBody, route } from '../http';
-import { DRIVER_GUIDES, store, type DriverGuide, type StoredUser } from '../store';
+import { DRIVER_GUIDES, FAVORITES_MAX, store, type DriverGuide, type StoredUser } from '../store';
+import { getStation } from '../charging';
 import { changePinSchema, normalizePhone, updateProfileSchema } from '../validation';
 import { verifyEbarimtCustomerNo, verifyTaxpayer } from '../../services/ebarimt.service';
 
@@ -138,6 +139,66 @@ accountRoutes.post(
     );
     const result = await verifyEbarimtCustomerNo(body.code, user.phone);
     return { ok: true, result };
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Favourite stations
+// ---------------------------------------------------------------------------
+
+const stationIdParam = z.string().regex(/^[a-f\d]{24}$/i, 'Буруу станцын дугаар');
+
+accountRoutes.get(
+  '/favorites',
+  route(async (req) => {
+    const user = await requireUser(req);
+    return { stationIds: await store.listFavorites(user.id) };
+  }),
+);
+
+accountRoutes.put(
+  '/favorites/:stationId',
+  route(async (req) => {
+    const user = await requireUser(req);
+    guard(req, `favorites:${user.id}`, 120, HOUR);
+    const parsed = stationIdParam.safeParse(req.params.stationId);
+    if (!parsed.success) throw badRequest('Буруу станцын дугаар');
+    const station = await getStation(parsed.data);
+    if (!station) throw notFound('Тухайн цэнэглэх станцыг олсонгүй');
+    const result = await store.addFavorite(user.id, station.id);
+    if (result === 'full') {
+      throw conflict(`Хамгийн ихдээ ${FAVORITES_MAX} станц хадгалах боломжтой`);
+    }
+    return { stationIds: result };
+  }),
+);
+
+accountRoutes.delete(
+  '/favorites/:stationId',
+  route(async (req) => {
+    const user = await requireUser(req);
+    guard(req, `favorites:${user.id}`, 120, HOUR);
+    const parsed = stationIdParam.safeParse(req.params.stationId);
+    if (!parsed.success) throw badRequest('Буруу станцын дугаар');
+    return { stationIds: await store.removeFavorite(user.id, parsed.data) };
+  }),
+);
+
+/**
+ * Signs the account out everywhere except this device: bumping tokenVersion
+ * invalidates every session cookie, then this device gets a fresh one.
+ */
+accountRoutes.post(
+  '/sign-out-others',
+  route(async (req, res) => {
+    const user = await requireUser(req);
+    guard(req, `sign-out-others:${user.id}`, 10, HOUR);
+    const updated = await store.updateUser(user.id, {
+      tokenVersion: (user.tokenVersion ?? 0) + 1,
+    });
+    if (!updated) throw notFound(ACCOUNT_NOT_FOUND);
+    setSessionCookie(res, updated);
+    return { ok: true };
   }),
 );
 
