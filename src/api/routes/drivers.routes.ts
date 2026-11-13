@@ -7,7 +7,7 @@ import { IdTag } from '../../models/IdTag';
 import { Transaction } from '../../models/Transaction';
 import { Wallet, WalletEntry, type WalletDoc } from '../../models/Wallet';
 import { Payment } from '../../models/Payment';
-import { r2, reconcileLedger } from '../../services/driver-statement.service';
+import { r2, reconcileLedger, signedAmount } from '../../services/driver-statement.service';
 import {
   asyncHandler,
   paginate,
@@ -802,8 +802,9 @@ driversRouter.get(
     // Which sessions were paid from the wallet, and which by a direct payment (QPay etc.)
     const txIds = txs.map((t) => t._id);
     const [txCharges, directPayments, topupPayments] = await Promise.all([
-      WalletEntry.find({ ...owner, type: 'CHARGE', transactionId: { $in: txIds } })
-        .select('transactionId amount')
+      // Net wallet charge per session: CHARGE debits minus any REFUND credited back for it.
+      WalletEntry.find({ ...owner, type: { $in: ['CHARGE', 'REFUND'] }, transactionId: { $in: txIds } })
+        .select('transactionId type amount')
         .lean(),
       Payment.find({ transactionId: { $in: txIds }, status: 'PAID' }).select('transactionId provider paidAmount').lean(),
       Payment.find({ _id: { $in: entries.map((e) => e.paymentId).filter((p) => p && Types.ObjectId.isValid(p)) } })
@@ -812,7 +813,7 @@ driversRouter.get(
     ]);
     const walletPaidByTx = new Map<number, number>();
     for (const e of txCharges) {
-      if (e.transactionId != null) walletPaidByTx.set(e.transactionId, (walletPaidByTx.get(e.transactionId) ?? 0) + e.amount);
+      if (e.transactionId != null) walletPaidByTx.set(e.transactionId, (walletPaidByTx.get(e.transactionId) ?? 0) - signedAmount(e));
     }
     const directByTx = new Map(directPayments.map((p) => [p.transactionId as number, p]));
     const providerByPayment = new Map(topupPayments.map((p) => [String(p._id), p.provider]));
@@ -1015,8 +1016,9 @@ driversRouter.get(
 
     const txIds = txs.map((t) => t._id);
     const [txCharges, directPayments, topupPayments] = await Promise.all([
-      WalletEntry.find({ ownerType: 'USER', type: 'CHARGE', transactionId: { $in: txIds } })
-        .select('transactionId amount')
+      // Net wallet charge per session: CHARGE debits minus any REFUND credited back for it.
+      WalletEntry.find({ ownerType: 'USER', type: { $in: ['CHARGE', 'REFUND'] }, transactionId: { $in: txIds } })
+        .select('transactionId type amount')
         .lean(),
       Payment.find({ transactionId: { $in: txIds }, status: 'PAID' }).select('transactionId provider paidAmount').lean(),
       Payment.find({ _id: { $in: entries.map((e) => e.paymentId).filter((p) => p && Types.ObjectId.isValid(p)) } })
@@ -1025,7 +1027,7 @@ driversRouter.get(
     ]);
     const walletPaidByTx = new Map<number, number>();
     for (const e of txCharges) {
-      if (e.transactionId != null) walletPaidByTx.set(e.transactionId, (walletPaidByTx.get(e.transactionId) ?? 0) + e.amount);
+      if (e.transactionId != null) walletPaidByTx.set(e.transactionId, (walletPaidByTx.get(e.transactionId) ?? 0) - signedAmount(e));
     }
     const directByTx = new Map(directPayments.map((p) => [p.transactionId as number, p]));
     const providerByPayment = new Map(topupPayments.map((p) => [String(p._id), p.provider]));
