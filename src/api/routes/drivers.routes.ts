@@ -5,7 +5,9 @@ import { DriverUser, getPhoneVariants, type DriverUserDoc } from '../../driver/s
 import { ChargePoint } from '../../models/ChargePoint';
 import { IdTag } from '../../models/IdTag';
 import { Transaction } from '../../models/Transaction';
-import { Wallet, type WalletDoc } from '../../models/Wallet';
+import { Wallet, WalletEntry, type WalletDoc } from '../../models/Wallet';
+import { Payment } from '../../models/Payment';
+import { r2, reconcileLedger } from '../../services/driver-statement.service';
 import {
   asyncHandler,
   paginate,
@@ -731,3 +733,414 @@ driversRouter.delete(
   }),
 );
 
+
+const statementQuery = z.object({
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
+});
+
+/**
+ * GET /api/drivers/:id/statement?from=&to=
+ * A driver's account statement: every charging session with the station it happened at,
+ * a per-station breakdown, and the wallet ledger (top-ups, charges, refunds, adjustments)
+ * reconciled from the opening balance to the closing balance.
+ */
+driversRouter.get(
+  '/:id/statement',
+  validate(statementQuery, 'query'),
+  asyncHandler(async (req, res) => {
+    const q = req.query as unknown as z.infer<typeof statementQuery>;
+    const { id } = req.params;
+    let driver = Types.ObjectId.isValid(id) ? await DriverUser.findById(id).lean<DriverUserDoc>() : null;
+    if (!driver) {
+      driver = await DriverUser.findOne({ phone: { $in: getPhoneVariants(id) } }).lean<DriverUserDoc>();
+    }
+    if (!driver) throw notFound(`Жолооч олдсонгүй: ${id}`);
+    const driverId = String(driver._id);
+    const clientScoped = Boolean((req.user?.role === 'CLIENT' || req.user?.clientId) && req.user?.clientId);
+
+    const cards = await IdTag.find({
+      $or: [
+        { walletOwnerType: 'USER', walletOwnerId: driverId },
+        ...(driver.idTag ? [{ _id: driver.idTag }] : []),
+        ...(driver.phone ? [{ ownerPhone: driver.phone }] : []),
+      ],
+    })
+      .select('_id label')
+      .lean();
+    const tagIds = [...new Set([...cards.map((c) => String(c._id)), ...(driver.idTag ? [driver.idTag] : [])])];
+
+    // ---- Sessions -------------------------------------------------------
+    const txMatch: Record<string, unknown> = { idTag: { $in: tagIds }, status: { $ne: 'Rejected' } };
+    if (clientScoped) txMatch.clientId = new Types.ObjectId(String(req.user?.clientId));
+    const startRange: Record<string, Date> = {};
+    if (q.from) startRange.$gte = q.from;
+    if (q.to) startRange.$lt = q.to;
+    if (Object.keys(startRange).length) txMatch.startTimestamp = startRange;
+
+    const txs = await Transaction.find(txMatch)
+      .populate('chargePointId', 'name cpId address')
+      .sort({ startTimestamp: 1 })
+      .lean();
+
+    // ---- Wallet ledger --------------------------------------------------
+    const owner = { ownerType: 'USER', ownerId: driverId };
+    const wallet = await Wallet.findOne(owner).lean();
+    const entryMatch: Record<string, unknown> = { ...owner };
+    const createdRange: Record<string, Date> = {};
+    if (q.from) createdRange.$gte = q.from;
+    if (q.to) createdRange.$lt = q.to;
+    if (Object.keys(createdRange).length) entryMatch.createdAt = createdRange;
+
+    const [entries, lastBefore] = await Promise.all([
+      clientScoped ? Promise.resolve([]) : WalletEntry.find(entryMatch).sort({ createdAt: 1, _id: 1 }).lean(),
+      !clientScoped && q.from
+        ? WalletEntry.findOne({ ...owner, createdAt: { $lt: q.from } }).sort({ createdAt: -1, _id: -1 }).lean()
+        : Promise.resolve(null),
+    ]);
+
+    // Which sessions were paid from the wallet, and which by a direct payment (QPay etc.)
+    const txIds = txs.map((t) => t._id);
+    const [txCharges, directPayments, topupPayments] = await Promise.all([
+      WalletEntry.find({ ...owner, type: 'CHARGE', transactionId: { $in: txIds } })
+        .select('transactionId amount')
+        .lean(),
+      Payment.find({ transactionId: { $in: txIds }, status: 'PAID' }).select('transactionId provider paidAmount').lean(),
+      Payment.find({ _id: { $in: entries.map((e) => e.paymentId).filter((p) => p && Types.ObjectId.isValid(p)) } })
+        .select('provider')
+        .lean(),
+    ]);
+    const walletPaidByTx = new Map<number, number>();
+    for (const e of txCharges) {
+      if (e.transactionId != null) walletPaidByTx.set(e.transactionId, (walletPaidByTx.get(e.transactionId) ?? 0) + e.amount);
+    }
+    const directByTx = new Map(directPayments.map((p) => [p.transactionId as number, p]));
+    const providerByPayment = new Map(topupPayments.map((p) => [String(p._id), p.provider]));
+
+    const stationName = (cp: unknown) => {
+      const c = cp as { name?: string; cpId?: string } | null;
+      return c?.name ?? c?.cpId ?? 'Станц';
+    };
+
+    const sessions = txs.map((t) => {
+      const walletPaid = r2(walletPaidByTx.get(t._id) ?? 0);
+      const direct = directByTx.get(t._id);
+      const cost = r2(t.cost ?? 0);
+      const paidBy = walletPaid > 0 ? 'Хэтэвч' : direct ? direct.provider : cost === 0 ? 'Төлбөргүй' : 'Тодорхойгүй';
+      return {
+        id: t._id,
+        stationId: String((t.chargePointId as { _id?: unknown })?._id ?? t.chargePointId),
+        stationName: stationName(t.chargePointId),
+        cpId: (t.chargePointId as { cpId?: string })?.cpId ?? '',
+        connectorId: t.connectorId,
+        idTag: t.idTag,
+        status: t.status,
+        startTimestamp: t.startTimestamp,
+        stopTimestamp: t.stopTimestamp ?? null,
+        energyKwh: r2((t.energyWh ?? 0) / 1000),
+        tariffPerKwh: t.tariffPerKwh ?? null,
+        cost,
+        refundAmount: t.refund?.amount != null ? r2(t.refund.amount) : 0,
+        paidBy,
+        walletPaid,
+        directPaid: direct ? r2(direct.paidAmount ?? 0) : 0,
+      };
+    });
+
+    const byStationMap = new Map<string, { stationId: string; stationName: string; cpId: string; sessions: number; energyKwh: number; cost: number; first: Date; last: Date }>();
+    for (const s of sessions) {
+      const b = byStationMap.get(s.stationId) ?? {
+        stationId: s.stationId,
+        stationName: s.stationName,
+        cpId: s.cpId,
+        sessions: 0,
+        energyKwh: 0,
+        cost: 0,
+        first: s.startTimestamp,
+        last: s.startTimestamp,
+      };
+      b.sessions += 1;
+      b.energyKwh = r2(b.energyKwh + s.energyKwh);
+      b.cost = r2(b.cost + s.cost);
+      if (s.startTimestamp < b.first) b.first = s.startTimestamp;
+      if (s.startTimestamp > b.last) b.last = s.startTimestamp;
+      byStationMap.set(s.stationId, b);
+    }
+    const byStation = [...byStationMap.values()].sort((a, b) => b.cost - a.cost);
+
+    const { rows, summary } = reconcileLedger(entries, lastBefore?.balanceAfter ?? 0);
+    const stationByTx = new Map(sessions.map((s) => [s.id, s.stationName]));
+    const ledger = rows.map((row) => ({
+      ...row,
+      stationName: row.transactionId != null ? (stationByTx.get(row.transactionId) ?? '') : '',
+      provider: row.paymentId ? (providerByPayment.get(String(row.paymentId)) ?? '') : '',
+    }));
+    const rangeReachesNow = !q.to || q.to.getTime() >= Date.now();
+
+    res.json({
+      driver: {
+        id: driverId,
+        name: driver.name ?? 'Нэргүй жолооч',
+        phone: driver.phone ?? '',
+        email: clientScoped ? '' : (driver.email ?? ''),
+        vehicle: [driver.vehicleBrand, driver.vehicleModel].filter(Boolean).join(' '),
+        isInternal: Boolean(driver.isInternal),
+        cards: tagIds,
+        createdAt: driver.createdAt,
+      },
+      period: { from: q.from ?? null, to: q.to ?? null },
+      walletHidden: clientScoped,
+      totals: {
+        sessions: sessions.length,
+        stations: byStation.length,
+        energyKwh: r2(sessions.reduce((a, s) => a + s.energyKwh, 0)),
+        cost: r2(sessions.reduce((a, s) => a + s.cost, 0)),
+        paidFromWallet: r2(sessions.reduce((a, s) => a + s.walletPaid, 0)),
+        paidDirect: r2(sessions.reduce((a, s) => a + s.directPaid, 0)),
+        unknownPayment: sessions.filter((s) => s.paidBy === 'Тодорхойгүй').length,
+      },
+      wallet: clientScoped
+        ? null
+        : {
+            ...summary,
+            currentBalance: r2(wallet?.balance ?? 0),
+            // Only comparable when the period runs up to today.
+            currentMatchesLedger: rangeReachesNow
+              ? Math.abs((wallet?.balance ?? 0) - summary.closingBalance) < 0.01
+              : null,
+            lifetimeToppedUp: r2(wallet?.totalToppedUp ?? 0),
+            lifetimeSpent: r2(wallet?.totalSpent ?? 0),
+          },
+      byStation,
+      sessions,
+      ledger,
+    });
+  }),
+);
+
+const bulkStatementQuery = z.object({
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
+  /** Only drivers who charged at this station in the period (their other stations still show). */
+  chargePointId: z.string().trim().optional(),
+});
+
+/**
+ * GET /api/drivers/export/statements?from=&to=&chargePointId=
+ * Statements for many drivers at once: per-driver totals and wallet reconciliation,
+ * a driver × station breakdown, every session and every wallet movement, each row
+ * tagged with its driver. Operators and admins only (it exposes every wallet).
+ */
+driversRouter.get(
+  '/export/statements',
+  requireOperator,
+  validate(bulkStatementQuery, 'query'),
+  asyncHandler(async (req, res) => {
+    const q = req.query as unknown as z.infer<typeof bulkStatementQuery>;
+    const range: Record<string, Date> = {};
+    if (q.from) range.$gte = q.from;
+    if (q.to) range.$lt = q.to;
+    const hasRange = Object.keys(range).length > 0;
+
+    let station: { id: string; name: string; cpId: string } | null = null;
+    if (q.chargePointId) {
+      const cp = await ChargePoint.findOne(
+        Types.ObjectId.isValid(q.chargePointId) ? { _id: q.chargePointId } : { cpId: q.chargePointId },
+      )
+        .select('name cpId')
+        .lean();
+      if (!cp) throw badRequest('Charge point not found');
+      station = { id: String(cp._id), name: cp.name ?? cp.cpId, cpId: cp.cpId };
+    }
+
+    // ---- Drivers and the charge tags that belong to them ----------------
+    const drivers = await DriverUser.find({})
+      .select('name phone email idTag vehicleBrand vehicleModel isInternal')
+      .lean<DriverUserDoc[]>();
+    const driverById = new Map(drivers.map((d) => [String(d._id), d]));
+    const driverByPhone = new Map(drivers.filter((d) => d.phone).map((d) => [String(d.phone), String(d._id)]));
+    const tagToDriver = new Map<string, string>();
+    for (const d of drivers) if (d.idTag) tagToDriver.set(d.idTag, String(d._id));
+    const tagDocs = await IdTag.find({
+      $or: [{ walletOwnerType: 'USER' }, { ownerPhone: { $in: [...driverByPhone.keys()] } }],
+    })
+      .select('_id walletOwnerType walletOwnerId ownerPhone')
+      .lean();
+    for (const t of tagDocs) {
+      const byWallet = t.walletOwnerType === 'USER' && t.walletOwnerId && driverById.has(t.walletOwnerId) ? t.walletOwnerId : undefined;
+      const owner = byWallet ?? (t.ownerPhone ? driverByPhone.get(t.ownerPhone) : undefined);
+      if (owner && !tagToDriver.has(String(t._id))) tagToDriver.set(String(t._id), owner);
+    }
+
+    // ---- Which drivers are in scope ---------------------------------------
+    let scopedDriverIds: Set<string> | null = null;
+    if (station) {
+      const tagsHere: string[] = await Transaction.distinct('idTag', {
+        chargePointId: new Types.ObjectId(station.id),
+        status: { $ne: 'Rejected' },
+        ...(hasRange ? { startTimestamp: range } : {}),
+      });
+      scopedDriverIds = new Set(tagsHere.map((t) => tagToDriver.get(t)).filter((x): x is string => Boolean(x)));
+    }
+    const inScope = (driverId: string) => !scopedDriverIds || scopedDriverIds.has(driverId);
+    const scopedTags = [...tagToDriver.entries()].filter(([, d]) => inScope(d)).map(([t]) => t);
+    const scopedIds = drivers.map((d) => String(d._id)).filter(inScope);
+
+    // ---- Sessions --------------------------------------------------------
+    const txs = await Transaction.find({
+      idTag: { $in: scopedTags },
+      status: { $ne: 'Rejected' },
+      ...(hasRange ? { startTimestamp: range } : {}),
+    })
+      .populate('chargePointId', 'name cpId')
+      .sort({ startTimestamp: 1 })
+      .lean();
+
+    // ---- Wallet ledger ---------------------------------------------------
+    const [wallets, entries, openings] = await Promise.all([
+      Wallet.find({ ownerType: 'USER', ownerId: { $in: scopedIds } }).lean(),
+      WalletEntry.find({ ownerType: 'USER', ownerId: { $in: scopedIds }, ...(hasRange ? { createdAt: range } : {}) })
+        .sort({ createdAt: 1, _id: 1 })
+        .lean(),
+      q.from
+        ? WalletEntry.aggregate<{ _id: string; balanceAfter: number }>([
+            { $match: { ownerType: 'USER', ownerId: { $in: scopedIds }, createdAt: { $lt: q.from } } },
+            { $sort: { createdAt: -1, _id: -1 } },
+            { $group: { _id: '$ownerId', balanceAfter: { $first: '$balanceAfter' } } },
+          ])
+        : Promise.resolve([]),
+    ]);
+    const walletByOwner = new Map(wallets.map((w) => [w.ownerId, w]));
+    const openingByOwner = new Map(openings.map((o) => [o._id, o.balanceAfter]));
+
+    const txIds = txs.map((t) => t._id);
+    const [txCharges, directPayments, topupPayments] = await Promise.all([
+      WalletEntry.find({ ownerType: 'USER', type: 'CHARGE', transactionId: { $in: txIds } })
+        .select('transactionId amount')
+        .lean(),
+      Payment.find({ transactionId: { $in: txIds }, status: 'PAID' }).select('transactionId provider paidAmount').lean(),
+      Payment.find({ _id: { $in: entries.map((e) => e.paymentId).filter((p) => p && Types.ObjectId.isValid(p)) } })
+        .select('provider')
+        .lean(),
+    ]);
+    const walletPaidByTx = new Map<number, number>();
+    for (const e of txCharges) {
+      if (e.transactionId != null) walletPaidByTx.set(e.transactionId, (walletPaidByTx.get(e.transactionId) ?? 0) + e.amount);
+    }
+    const directByTx = new Map(directPayments.map((p) => [p.transactionId as number, p]));
+    const providerByPayment = new Map(topupPayments.map((p) => [String(p._id), p.provider]));
+
+    const sessions = txs.map((t) => {
+      const cp = t.chargePointId as unknown as { _id?: unknown; name?: string; cpId?: string } | null;
+      const driverId = tagToDriver.get(t.idTag) ?? '';
+      const d = driverById.get(driverId);
+      const walletPaid = r2(walletPaidByTx.get(t._id) ?? 0);
+      const direct = directByTx.get(t._id);
+      const cost = r2(t.cost ?? 0);
+      return {
+        id: t._id,
+        driverId,
+        driverName: d?.name ?? '',
+        driverPhone: d?.phone ?? '',
+        stationId: String(cp?._id ?? ''),
+        stationName: cp?.name ?? cp?.cpId ?? 'Станц',
+        cpId: cp?.cpId ?? '',
+        connectorId: t.connectorId,
+        idTag: t.idTag,
+        status: t.status,
+        startTimestamp: t.startTimestamp,
+        stopTimestamp: t.stopTimestamp ?? null,
+        energyKwh: r2((t.energyWh ?? 0) / 1000),
+        tariffPerKwh: t.tariffPerKwh ?? null,
+        cost,
+        refundAmount: t.refund?.amount != null ? r2(t.refund.amount) : 0,
+        paidBy: walletPaid > 0 ? 'Хэтэвч' : direct ? direct.provider : cost === 0 ? 'Төлбөргүй' : 'Тодорхойгүй',
+        walletPaid,
+        directPaid: direct ? r2(direct.paidAmount ?? 0) : 0,
+      };
+    });
+    const stationByTx = new Map(sessions.map((s) => [s.id, s.stationName]));
+
+    const sessionsByDriver = new Map<string, typeof sessions>();
+    for (const s of sessions) {
+      const list = sessionsByDriver.get(s.driverId) ?? [];
+      list.push(s);
+      sessionsByDriver.set(s.driverId, list);
+    }
+    const entriesByDriver = new Map<string, typeof entries>();
+    for (const e of entries) {
+      const list = entriesByDriver.get(e.ownerId) ?? [];
+      list.push(e);
+      entriesByDriver.set(e.ownerId, list);
+    }
+
+    const rangeReachesNow = !q.to || q.to.getTime() >= Date.now();
+    const ledger: Record<string, unknown>[] = [];
+    const driverRows = scopedIds
+      .map((driverId) => {
+        const d = driverById.get(driverId)!;
+        const own = sessionsByDriver.get(driverId) ?? [];
+        const ownEntries = entriesByDriver.get(driverId) ?? [];
+        const wallet = walletByOwner.get(driverId);
+        if (!own.length && !ownEntries.length && (station || !(wallet?.balance ?? 0))) return null;
+
+        const { rows, summary } = reconcileLedger(ownEntries, openingByOwner.get(driverId) ?? 0);
+        for (const row of rows) {
+          ledger.push({
+            ...row,
+            driverId,
+            driverName: d.name ?? '',
+            driverPhone: d.phone ?? '',
+            stationName: row.transactionId != null ? (stationByTx.get(row.transactionId) ?? '') : '',
+            provider: row.paymentId ? (providerByPayment.get(String(row.paymentId)) ?? '') : '',
+          });
+        }
+
+        const perStation = new Map<string, { stationName: string; cpId: string; sessions: number; energyKwh: number; cost: number }>();
+        for (const s of own) {
+          const b = perStation.get(s.stationId) ?? { stationName: s.stationName, cpId: s.cpId, sessions: 0, energyKwh: 0, cost: 0 };
+          b.sessions += 1;
+          b.energyKwh = r2(b.energyKwh + s.energyKwh);
+          b.cost = r2(b.cost + s.cost);
+          perStation.set(s.stationId, b);
+        }
+        const currentBalance = r2(wallet?.balance ?? 0);
+        return {
+          id: driverId,
+          name: d.name ?? 'Нэргүй жолооч',
+          phone: d.phone ?? '',
+          email: d.email ?? '',
+          vehicle: [d.vehicleBrand, d.vehicleModel].filter(Boolean).join(' '),
+          isInternal: Boolean(d.isInternal),
+          cards: [...tagToDriver.entries()].filter(([, o]) => o === driverId).map(([t]) => t),
+          sessions: own.length,
+          energyKwh: r2(own.reduce((a, s) => a + s.energyKwh, 0)),
+          cost: r2(own.reduce((a, s) => a + s.cost, 0)),
+          paidFromWallet: r2(own.reduce((a, s) => a + s.walletPaid, 0)),
+          paidDirect: r2(own.reduce((a, s) => a + s.directPaid, 0)),
+          unknownPayment: own.filter((s) => s.paidBy === 'Тодорхойгүй').length,
+          stations: [...perStation.values()].sort((a, b) => b.cost - a.cost),
+          wallet: {
+            ...summary,
+            currentBalance,
+            currentMatchesLedger: rangeReachesNow
+              ? ownEntries.length || q.from
+                ? Math.abs(currentBalance - summary.closingBalance) < 0.01
+                : currentBalance === 0
+              : null,
+          },
+        };
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null)
+      .sort((a, b) => b.cost - a.cost);
+
+    const included = new Set(driverRows.map((d) => d.id));
+    res.json({
+      period: { from: q.from ?? null, to: q.to ?? null },
+      station,
+      drivers: driverRows,
+      sessions: sessions.filter((s) => included.has(s.driverId)),
+      ledger: ledger.filter((l) => included.has(String(l.driverId))),
+    });
+  }),
+);
