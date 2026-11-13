@@ -4,6 +4,9 @@ import { z } from 'zod';
 import { badRequest, forbidden } from '../../lib/errors';
 import { ChargePoint } from '../../models/ChargePoint';
 import { Client } from '../../models/Client';
+import { DriverUser } from '../../driver/store';
+import { IdTag } from '../../models/IdTag';
+import { Payment } from '../../models/Payment';
 import { Settlement } from '../../models/Settlement';
 import { Transaction } from '../../models/Transaction';
 import { asyncHandler, requireAuth, validate } from '../middleware';
@@ -406,6 +409,171 @@ reportsRouter.get(
       daily,
       connectors,
       recentSessions,
+    });
+  }),
+);
+
+const sessionsExportSchema = z.object({
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
+  chargePointId: z.string().min(1),
+});
+
+/** Keep only the last 4 digits so station owners can tell drivers apart without seeing contacts. */
+function maskPhone(phone?: string | null): string {
+  if (!phone) return '';
+  return phone.length <= 4 ? phone : `${'*'.repeat(phone.length - 4)}${phone.slice(-4)}`;
+}
+
+/**
+ * GET /api/reports/sessions-export?chargePointId=&from=&to=
+ * Every completed session of one station in the period (no 500-row cap), joined
+ * with the driver account, the charge card and the payment that funded it.
+ * Station-owner (CLIENT) accounts get driver contacts masked.
+ */
+reportsRouter.get(
+  '/sessions-export',
+  validate(sessionsExportSchema, 'query'),
+  asyncHandler(async (req, res) => {
+    const q = req.query as unknown as z.infer<typeof sessionsExportSchema>;
+    const isClientUser = req.user?.role === 'CLIENT' || Boolean(req.user?.clientId);
+
+    const cp = await ChargePoint.findOne(
+      isValidObjectId(q.chargePointId) ? { _id: q.chargePointId } : { cpId: q.chargePointId },
+    ).lean();
+    if (!cp) throw badRequest('Charge point not found');
+
+    const match: Record<string, unknown> = { chargePointId: cp._id, status: 'Completed' };
+
+    if (isClientUser) {
+      const clientId = String(req.user?.clientId ?? '');
+      const isOwner = String(cp.clientId ?? '') === clientId;
+      const isLinked = (cp.linkedClientIds ?? []).some((cid) => String(cid) === clientId);
+      if (!clientId || (!isOwner && !isLinked)) throw forbidden('Access denied for this station');
+      // A linked (non-owner) client only sees the sessions billed to them.
+      if (!isOwner) match.clientId = new Types.ObjectId(clientId);
+    }
+
+    const stop: Record<string, Date> = {};
+    if (q.from) stop.$gte = q.from;
+    if (q.to) stop.$lt = q.to;
+    if (Object.keys(stop).length) match.stopTimestamp = stop;
+
+    const txs = await Transaction.find(match).sort({ stopTimestamp: 1 }).lean();
+
+    const tagIds = [...new Set(txs.map((t) => t.idTag).filter(Boolean))];
+    const [tags, payments] = await Promise.all([
+      IdTag.find({ _id: { $in: tagIds } }).lean(),
+      Payment.find({ transactionId: { $in: txs.map((t) => t._id) } })
+        .select('transactionId provider status paidAmount amount paidAt')
+        .lean(),
+    ]);
+
+    const tagMap = new Map(tags.map((t) => [String(t._id), t]));
+    const driverIds = tags
+      .filter((t) => t.walletOwnerType === 'USER' && t.walletOwnerId && isValidObjectId(t.walletOwnerId))
+      .map((t) => String(t.walletOwnerId));
+    const drivers = await DriverUser.find({
+      $or: [{ idTag: { $in: tagIds } }, { _id: { $in: driverIds } }],
+    })
+      .select('name phone email idTag vehicleBrand vehicleModel isInternal')
+      .lean();
+    const driverById = new Map(drivers.map((d) => [String(d._id), d]));
+    const driverByTag = new Map(drivers.filter((d) => d.idTag).map((d) => [String(d.idTag), d]));
+
+    const paymentByTx = new Map<number, (typeof payments)[number]>();
+    for (const p of payments) {
+      if (p.transactionId == null) continue;
+      const prev = paymentByTx.get(p.transactionId);
+      // A session can have several invoices; prefer the paid one.
+      if (!prev || p.status === 'PAID') paymentByTx.set(p.transactionId, p);
+    }
+
+    const sessions = txs.map((t) => {
+      const tag = tagMap.get(t.idTag);
+      const driver =
+        driverByTag.get(t.idTag) ??
+        (tag?.walletOwnerType === 'USER' && tag.walletOwnerId
+          ? driverById.get(String(tag.walletOwnerId))
+          : undefined);
+      const payment = paymentByTx.get(t._id);
+      const energyKwh = round2((t.energyWh ?? 0) / 1000);
+      const durationMin =
+        t.stopTimestamp && t.startTimestamp
+          ? Math.round((new Date(t.stopTimestamp).getTime() - new Date(t.startTimestamp).getTime()) / 60000)
+          : null;
+      const cost = round2(t.cost ?? 0);
+      const fee = round2(t.feeAmount ?? 0);
+      const phone = driver?.phone ?? tag?.ownerPhone ?? '';
+      const email = driver?.email ?? tag?.ownerEmail ?? '';
+      const vehicle =
+        [driver?.vehicleBrand, driver?.vehicleModel].filter(Boolean).join(' ') || t.vehicleModel || '';
+
+      return {
+        id: t._id,
+        connectorId: t.connectorId,
+        idTag: t.idTag,
+        driverName: driver?.name ?? tag?.ownerName ?? tag?.label ?? '',
+        driverPhone: isClientUser ? maskPhone(phone) : phone,
+        driverEmail: isClientUser ? '' : email,
+        driverType: driver ? (driver.isInternal ? 'Дотоод' : 'Апп хэрэглэгч') : tag ? 'Карт' : 'Тодорхойгүй',
+        vehicle,
+        vehicleVin: isClientUser ? '' : (t.vehicleVin ?? ''),
+        vehicleBatteryKwh: t.vehicleBatteryKwh ?? null,
+        startTimestamp: t.startTimestamp,
+        stopTimestamp: t.stopTimestamp ?? null,
+        durationMin,
+        meterStartWh: t.meterStart,
+        meterStopWh: t.meterStop ?? null,
+        energyKwh,
+        avgPowerKw: durationMin && durationMin > 0 ? round2(energyKwh / (durationMin / 60)) : null,
+        startSocPercent: t.startSocPercent ?? null,
+        endSocPercent: t.lastSocPercent ?? null,
+        tariffPerKwh: t.tariffPerKwh ?? null,
+        energyCost: round2(t.energyCost ?? cost - fee),
+        feePercent: t.feePercent ?? 0,
+        feeAmount: fee,
+        cost,
+        clientNet: round2(cost - fee),
+        stopReason: t.stopReason ?? '',
+        startedRemotely: Boolean(t.startedRemotely),
+        paymentProvider: payment?.provider ?? '',
+        paymentStatus: payment?.status ?? '',
+        paidAmount: payment ? round2(payment.paidAmount ?? 0) : null,
+        ebarimtStatus: t.ebarimt?.status ?? '',
+        ebarimtReceiptId: t.ebarimt?.receiptId ?? '',
+        refundAmount: t.refund?.amount != null ? round2(t.refund.amount) : null,
+        stationError: t.stationError?.errorCode ?? '',
+      };
+    });
+
+    const totalWh = txs.reduce((a, t) => a + (t.energyWh ?? 0), 0);
+    const gross = round2(sessions.reduce((a, s) => a + s.cost, 0));
+    const fee = round2(sessions.reduce((a, s) => a + s.feeAmount, 0));
+
+    res.json({
+      station: {
+        id: String(cp._id),
+        cpId: cp.cpId,
+        name: cp.name ?? cp.cpId,
+        address: cp.address ?? '',
+        vendor: cp.chargePointVendor ?? '',
+        model: cp.chargePointModel ?? '',
+        serialNumber: cp.chargePointSerialNumber ?? '',
+        tariffPerKwh: cp.tariffPerKwh ?? null,
+        tariffZones: cp.tariffZones ?? [],
+      },
+      period: { from: q.from ?? null, to: q.to ?? null },
+      contactsMasked: isClientUser,
+      totals: {
+        sessionsCount: sessions.length,
+        driversCount: new Set(sessions.map((s) => s.idTag)).size,
+        energyKwh: round2(totalWh / 1000),
+        gross,
+        fee,
+        net: round2(gross - fee),
+      },
+      sessions,
     });
   }),
 );
