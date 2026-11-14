@@ -443,6 +443,10 @@ reportsRouter.get(
     ).lean();
     if (!cp) throw badRequest('Charge point not found');
 
+    const clientDoc = cp.clientId
+      ? await Client.findById(cp.clientId).select('_id name businessRegister feePercent').lean()
+      : null;
+
     const match: Record<string, unknown> = { chargePointId: cp._id, status: 'Completed' };
 
     if (isClientUser) {
@@ -563,6 +567,14 @@ reportsRouter.get(
         tariffPerKwh: cp.tariffPerKwh ?? null,
         tariffZones: cp.tariffZones ?? [],
       },
+      client: clientDoc
+        ? {
+            id: String(clientDoc._id),
+            name: clientDoc.name,
+            businessRegister: clientDoc.businessRegister,
+            feePercent: clientDoc.feePercent,
+          }
+        : null,
       period: { from: q.from ?? null, to: q.to ?? null },
       contactsMasked: isClientUser,
       totals: {
