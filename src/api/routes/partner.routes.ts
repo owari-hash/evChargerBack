@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import rateLimit from 'express-rate-limit';
+import path from 'path';
+import fs from 'fs';
 import { badRequest, notFound, unauthorized } from '../../lib/errors';
 import {
   PartnerMerchant,
@@ -28,6 +30,19 @@ const loginLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Хэт олон нэвтрэх оролдлого хийсэн байна. Түр хүлээнэ үү' },
+});
+
+// ---------------------------------------------------------------------------
+// 0. Public Documentation & OpenAPI Spec
+// ---------------------------------------------------------------------------
+
+partnerRouter.get('/docs/openapi.json', (_req, res) => {
+  const specPath = path.resolve(process.cwd(), 'docs', 'partner-openapi.json');
+  if (fs.existsSync(specPath)) {
+    res.setHeader('Content-Type', 'application/json');
+    return fs.createReadStream(specPath).pipe(res);
+  }
+  return res.status(404).json({ error: 'OpenAPI specification file not found' });
 });
 
 // ---------------------------------------------------------------------------

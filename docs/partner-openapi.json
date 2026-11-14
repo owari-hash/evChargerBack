@@ -1,0 +1,322 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Eplug EV Charger Partner API",
+    "description": "Integration API for external partners and merchants to manage EV charging stations, sessions, and telemetry.",
+    "version": "1.0.0",
+    "contact": {
+      "name": "Eplug Support",
+      "email": "support@eplug.mn",
+      "url": "https://eplug.mn"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://eplug.mn/api/partner",
+      "description": "Production Server"
+    },
+    {
+      "url": "http://localhost:3000/api/partner",
+      "description": "Local Development Server"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Enter the accessToken obtained from /auth/login"
+      }
+    },
+    "schemas": {
+      "LoginRequest": {
+        "type": "object",
+        "required": ["username", "password"],
+        "properties": {
+          "username": { "type": "string", "example": "partner_username" },
+          "password": { "type": "string", "example": "secure_password" }
+        }
+      },
+      "LoginResponse": {
+        "type": "object",
+        "properties": {
+          "accessToken": { "type": "string" },
+          "refreshToken": { "type": "string" },
+          "tokenType": { "type": "string", "example": "Bearer" },
+          "expiresIn": { "type": "integer", "example": 7200 },
+          "merchant": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "code": { "type": "string" },
+              "username": { "type": "string" },
+              "scopes": { "type": "array", "items": { "type": "string" } },
+              "allowedStations": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        }
+      },
+      "RefreshRequest": {
+        "type": "object",
+        "required": ["refreshToken"],
+        "properties": {
+          "refreshToken": { "type": "string" }
+        }
+      },
+      "RefreshResponse": {
+        "type": "object",
+        "properties": {
+          "accessToken": { "type": "string" },
+          "refreshToken": { "type": "string" },
+          "tokenType": { "type": "string", "example": "Bearer" },
+          "expiresIn": { "type": "integer", "example": 7200 }
+        }
+      },
+      "Connector": {
+        "type": "object",
+        "properties": {
+          "connectorId": { "type": "integer", "example": 1 },
+          "type": { "type": "string", "example": "CCS2" },
+          "powerKw": { "type": "number", "example": 60 },
+          "status": {
+            "type": "string",
+            "enum": ["Available", "Preparing", "Charging", "Finishing", "Unavailable", "Faulted"],
+            "example": "Available"
+          },
+          "errorCode": { "type": "string", "example": "NoError" }
+        }
+      },
+      "Station": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "cpId": { "type": "string", "example": "META" },
+          "name": { "type": "string", "example": "МЕТА ЦЕНТР" },
+          "address": { "type": "string" },
+          "latitude": { "type": "number", "example": 47.9102 },
+          "longitude": { "type": "number", "example": 106.8854 },
+          "vendor": { "type": "string", "example": "Grasen" },
+          "model": { "type": "string", "example": "DC-60KW" },
+          "tariffPerKwh": { "type": "number", "example": 850 },
+          "isOnline": { "type": "boolean", "example": true },
+          "connectors": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Connector" }
+          }
+        }
+      },
+      "StartSessionRequest": {
+        "type": "object",
+        "required": ["cpId"],
+        "properties": {
+          "cpId": { "type": "string", "example": "META" },
+          "connectorId": { "type": "integer", "default": 1, "example": 1 },
+          "idTag": { "type": "string", "example": "PARTNER-USER-1" }
+        }
+      },
+      "StopSessionRequest": {
+        "type": "object",
+        "required": ["transactionId"],
+        "properties": {
+          "transactionId": { "type": "integer", "example": 10425 }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "error": { "type": "string", "example": "Unauthorized or invalid parameters" }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/auth/login": {
+      "post": {
+        "summary": "Partner login & issue tokens",
+        "description": "Authenticate with username and password to obtain accessToken and refreshToken.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/LoginRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Login successful",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/LoginResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid credentials or inactive merchant",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/refresh": {
+      "post": {
+        "summary": "Refresh access token",
+        "description": "Rotates refresh token and issues a new access token.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RefreshRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Token refreshed successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RefreshResponse" }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired refresh token",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/revoke": {
+      "post": {
+        "summary": "Revoke all partner tokens",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": { "description": "All tokens revoked" }
+        }
+      }
+    },
+    "/me": {
+      "get": {
+        "summary": "Get current partner profile & scopes",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Partner profile returned" }
+        }
+      }
+    },
+    "/stations": {
+      "get": {
+        "summary": "List charging stations",
+        "description": "Returns stations with location, online status, and connector availability.",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "List of stations",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "stations": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Station" }
+                    },
+                    "total": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/stations/{cpId}": {
+      "get": {
+        "summary": "Get station by cpId",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          { "name": "cpId", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Station detail",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Station" }
+              }
+            }
+          },
+          "404": { "description": "Station not found" }
+        }
+      }
+    },
+    "/sessions/start": {
+      "post": {
+        "summary": "Remote start charging session",
+        "security": [{ "BearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/StartSessionRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Remote start accepted" },
+          "400": { "description": "Station offline or invalid connector" }
+        }
+      }
+    },
+    "/sessions/stop": {
+      "post": {
+        "summary": "Remote stop charging session",
+        "security": [{ "BearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/StopSessionRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Remote stop accepted" },
+          "404": { "description": "Session not found" }
+        }
+      }
+    },
+    "/sessions/active": {
+      "get": {
+        "summary": "List active charging sessions",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": { "description": "List of active sessions" }
+        }
+      }
+    },
+    "/sessions/{id}": {
+      "get": {
+        "summary": "Get session telemetry and energy",
+        "security": [{ "BearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "description": "Session detail" },
+          "404": { "description": "Session not found" }
+        }
+      }
+    }
+  }
+}
