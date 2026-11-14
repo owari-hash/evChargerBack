@@ -5,6 +5,7 @@ import { HttpError } from '../../lib/errors';
 import { CallTimeoutError, OcppRpcError } from '../../ocpp/types';
 
 export * from './auth';
+export * from './partnerAuth';
 
 /** Wrap an async route so rejected promises reach the error handler. */
 export function asyncHandler<T extends RequestHandler>(fn: T): RequestHandler {

@@ -42,6 +42,8 @@ import { analyticsRouter } from './routes/analytics.routes';
 import { driversRouter } from './routes/drivers.routes';
 import { contactRouter } from './routes/contact.routes';
 import { feedbackAdminRouter } from './routes/feedback.routes';
+import { partnerRouter } from './routes/partner.routes';
+import { partnerMerchantsRouter } from './routes/partner-merchants.routes';
 
 export function createApp(): Express {
   const app = express();
@@ -184,6 +186,8 @@ export function createApp(): Express {
   api.use('/analytics', analyticsRouter);
   api.use('/contact', contactRouter);
   api.use('/feedback', feedbackAdminRouter);
+  api.use('/partner', partnerRouter);
+  api.use('/partner-merchants', partnerMerchantsRouter);
 
   app.use(base || '/', api);
 

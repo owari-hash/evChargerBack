@@ -26,4 +26,7 @@ export * from './DriverNotification';
 export * from './AccessLog';
 export * from './ContactInfo';
 export * from './Feedback';
+export * from './PartnerMerchant';
+export * from './PartnerRefreshToken';
+export * from './PartnerApiLog';
 export { Counter, nextSequence, ensureSequenceAtLeast } from '../lib/counters';
