@@ -22,3 +22,4 @@ export type PartnerRefreshTokenAttrs = InferSchemaType<typeof partnerRefreshToke
 export type PartnerRefreshTokenDoc = HydratedDocument<PartnerRefreshTokenAttrs>;
 
 export const PartnerRefreshToken = model('PartnerRefreshToken', partnerRefreshTokenSchema);
+

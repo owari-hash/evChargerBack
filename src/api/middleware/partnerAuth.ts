@@ -279,3 +279,4 @@ export function requirePartnerScope(scope: PartnerScope) {
     next();
   };
 }
+

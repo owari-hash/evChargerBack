@@ -88,3 +88,4 @@ export async function hashPartnerPassword(plain: string): Promise<string> {
 export async function verifyPartnerPassword(plain: string, hash: string): Promise<boolean> {
   return bcrypt.compare(plain, hash);
 }
+

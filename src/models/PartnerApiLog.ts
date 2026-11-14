@@ -27,3 +27,4 @@ export type PartnerApiLogAttrs = InferSchemaType<typeof partnerApiLogSchema>;
 export type PartnerApiLogDoc = HydratedDocument<PartnerApiLogAttrs>;
 
 export const PartnerApiLog = model('PartnerApiLog', partnerApiLogSchema);
+
