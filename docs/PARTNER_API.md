@@ -381,3 +381,4 @@ headers = {"Authorization": f"Bearer {access_token}"}
 stations_res = requests.get(f"{BASE_URL}/stations", headers=headers)
 print("Stations:", stations_res.json())
 ```
+
