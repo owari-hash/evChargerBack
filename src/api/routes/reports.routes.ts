@@ -33,8 +33,6 @@ function driverFields(info: SessionDriverInfo | undefined) {
   return {
     driverName: info?.driverName ?? '',
     driverPhone: info?.driverPhone ?? '',
-    rfid: info?.rfid ?? '',
-    startedBy: info?.startedBy ?? 'UNKNOWN',
   };
 }
 
@@ -528,10 +526,7 @@ reportsRouter.get(
     if (Object.keys(stop).length) match.stopTimestamp = stop;
 
     const txs = await Transaction.find(match).sort({ stopTimestamp: 1 }).lean();
-    const [payInfoByTx, driverInfoByTag] = await Promise.all([
-      resolveSessionPayments(txs),
-      resolveSessionDrivers(txs),
-    ]);
+    const payInfoByTx = await resolveSessionPayments(txs);
 
     const tagIds = [...new Set(txs.map((t) => t.idTag).filter(Boolean))];
     const [tags, payments] = await Promise.all([
@@ -585,8 +580,6 @@ reportsRouter.get(
         id: t._id,
         connectorId: t.connectorId,
         idTag: t.idTag,
-        rfid: driverInfoByTag.get(t.idTag)?.rfid ?? '',
-        startedBy: driverInfoByTag.get(t.idTag)?.startedBy ?? 'UNKNOWN',
         driverName: driver?.name ?? tag?.ownerName ?? tag?.label ?? '',
         driverPhone: isClientUser ? maskPhone(phone) : phone,
         driverEmail: isClientUser ? '' : email,

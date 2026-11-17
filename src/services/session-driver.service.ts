@@ -1,11 +1,9 @@
 /**
- * Resolves who charged each session: the driver's phone and their RFID card(s).
+ * Resolves who charged each session: the driver's name and phone.
  *
- * A driver account carries an app tag (`DriverUser.idTag`, e.g. EVMUGDU9TRRJ) used
- * for app/remote starts; physical RFID cards are separate IdTag records whose
- * wallet points at the driver (`walletOwnerType: 'USER'`). So a session started
- * with a card has that card as its idTag, and one started from the app has the
- * app tag — for those we show the driver's linked cards instead.
+ * A session's idTag is either a driver's app tag (`DriverUser.idTag`) or an RFID
+ * card whose wallet points at the driver (`walletOwnerType: 'USER'`); cards not
+ * tied to an account fall back to the owner details stored on the card.
  */
 import { isValidObjectId } from 'mongoose';
 import { DriverUser } from '../driver/store';
@@ -14,10 +12,6 @@ import { IdTag } from '../models/IdTag';
 export interface SessionDriverInfo {
   driverName: string;
   driverPhone: string;
-  /** RFID card number(s): the card used, or the driver's linked cards for app starts. */
-  rfid: string;
-  /** How the session was authorised. */
-  startedBy: 'APP' | 'CARD' | 'UNKNOWN';
 }
 
 /** Keep only the last 4 digits so station owners can tell drivers apart without seeing contacts. */
@@ -48,22 +42,6 @@ export async function resolveSessionDrivers(
   const driverById = new Map(drivers.map((d) => [String(d._id), d]));
   const driverByTag = new Map(drivers.filter((d) => d.idTag).map((d) => [String(d.idTag), d]));
 
-  // Every RFID card linked to these drivers (for sessions started from the app).
-  const cards = drivers.length
-    ? await IdTag.find({ walletOwnerType: 'USER', walletOwnerId: { $in: drivers.map((d) => String(d._id)) } })
-        .select('_id walletOwnerId')
-        .lean()
-    : [];
-  const cardsByDriver = new Map<string, string[]>();
-  for (const c of cards) {
-    const driverId = String(c.walletOwnerId);
-    const appTag = driverById.get(driverId)?.idTag;
-    if (String(c._id) === appTag) continue; // the app tag is not a card
-    const list = cardsByDriver.get(driverId) ?? [];
-    list.push(String(c._id));
-    cardsByDriver.set(driverId, list);
-  }
-
   for (const idTag of tagIds) {
     const tag = tagById.get(idTag);
     const appDriver = driverByTag.get(idTag);
@@ -74,21 +52,9 @@ export async function resolveSessionDrivers(
     const driver = appDriver ?? cardDriver;
     const phone = driver?.phone ?? tag?.ownerPhone ?? '';
 
-    let rfid = '';
-    let startedBy: SessionDriverInfo['startedBy'] = 'UNKNOWN';
-    if (appDriver) {
-      startedBy = 'APP';
-      rfid = (cardsByDriver.get(String(appDriver._id)) ?? []).join(', ');
-    } else if (tag) {
-      startedBy = 'CARD';
-      rfid = idTag;
-    }
-
     out.set(idTag, {
       driverName: driver?.name ?? tag?.ownerName ?? tag?.label ?? '',
       driverPhone: opts.maskContacts ? maskPhone(phone) : phone,
-      rfid,
-      startedBy,
     });
   }
   return out;
