@@ -9,12 +9,45 @@ import { IdTag } from '../../models/IdTag';
 import { Payment } from '../../models/Payment';
 import { Settlement } from '../../models/Settlement';
 import { Transaction } from '../../models/Transaction';
+import { resolveSessionPayments, type SessionPaymentInfo } from '../../services/session-payment.service';
+import { maskPhone, resolveSessionDrivers, type SessionDriverInfo } from '../../services/session-driver.service';
 import { asyncHandler, requireAuth, validate } from '../middleware';
 
 export const reportsRouter = Router();
 reportsRouter.use(requireAuth);
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/** Upper bound on per-session rows returned by /summary (station history, session log). */
+const SUMMARY_SESSION_LIMIT = 2000;
+
+const NO_PAYMENT_INFO: SessionPaymentInfo = {
+  paymentMethod: 'UNPAID',
+  walletPaid: 0,
+  directPaid: 0,
+  balanceAfter: null,
+  walletOwnerType: null,
+};
+
+function driverFields(info: SessionDriverInfo | undefined) {
+  return {
+    driverName: info?.driverName ?? '',
+    driverPhone: info?.driverPhone ?? '',
+    rfid: info?.rfid ?? '',
+    startedBy: info?.startedBy ?? 'UNKNOWN',
+  };
+}
+
+function paymentFields(info: SessionPaymentInfo | undefined) {
+  const p = info ?? NO_PAYMENT_INFO;
+  return {
+    paymentMethod: p.paymentMethod,
+    walletPaid: p.walletPaid,
+    directPaid: p.directPaid,
+    balanceAfter: p.balanceAfter,
+    walletOwnerType: p.walletOwnerType,
+  };
+}
 
 const reportQuerySchema = z.object({
   from: z.coerce.date().optional(),
@@ -181,7 +214,7 @@ reportsRouter.get(
         ],
         recentSessions: [
           { $sort: { stopTimestamp: -1 } },
-          { $limit: 500 },
+          { $limit: SUMMARY_SESSION_LIMIT },
           {
             $project: {
               _id: 1,
@@ -218,6 +251,13 @@ reportsRouter.get(
     });
 
     const [aggregateResult] = await Transaction.aggregate(pipeline);
+    const summarySessions = aggregateResult?.recentSessions ?? [];
+    const [paymentByTx, driverByTag] = await Promise.all([
+      resolveSessionPayments(summarySessions),
+      resolveSessionDrivers(summarySessions, {
+        maskContacts: req.user?.role === 'CLIENT' || Boolean(req.user?.clientId),
+      }),
+    ]);
 
     // Fetch settlements and client details if client is filtered or known
     let clientInfo: any = null;
@@ -279,6 +319,8 @@ reportsRouter.get(
           cost: round2(tx.cost ?? 0),
           feeAmount: round2(tx.feeAmount ?? 0),
           clientNet: round2((tx.cost ?? 0) - (tx.feeAmount ?? 0)),
+          ...paymentFields(paymentByTx.get(tx._id)),
+          ...driverFields(driverByTag.get(tx.idTag)),
         }));
 
       return {
@@ -367,8 +409,33 @@ reportsRouter.get(
         feeAmount,
         cost,
         clientNet: net,
+        ...paymentFields(paymentByTx.get(tx._id)),
+        ...driverFields(driverByTag.get(tx.idTag)),
       };
     });
+
+    // Breakdown by payment method, over the sessions returned above.
+    const byPaymentMap = new Map<
+      string,
+      { method: string; sessionsCount: number; energyKwh: number; gross: number; walletPaid: number; directPaid: number }
+    >();
+    for (const s of recentSessions) {
+      const b = byPaymentMap.get(s.paymentMethod) ?? {
+        method: s.paymentMethod,
+        sessionsCount: 0,
+        energyKwh: 0,
+        gross: 0,
+        walletPaid: 0,
+        directPaid: 0,
+      };
+      b.sessionsCount += 1;
+      b.energyKwh = round2(b.energyKwh + s.energyKwh);
+      b.gross = round2(b.gross + s.cost);
+      b.walletPaid = round2(b.walletPaid + s.walletPaid);
+      b.directPaid = round2(b.directPaid + s.directPaid);
+      byPaymentMap.set(s.paymentMethod, b);
+    }
+    const byPaymentMethod = [...byPaymentMap.values()].sort((a, b) => b.gross - a.gross);
 
     res.json({
       period: {
@@ -409,6 +476,9 @@ reportsRouter.get(
       daily,
       connectors,
       recentSessions,
+      byPaymentMethod,
+      /** True when the period has more sessions than were returned per-session. */
+      sessionsTruncated: totalSessions > recentSessions.length,
     });
   }),
 );
@@ -418,12 +488,6 @@ const sessionsExportSchema = z.object({
   to: z.coerce.date().optional(),
   chargePointId: z.string().min(1),
 });
-
-/** Keep only the last 4 digits so station owners can tell drivers apart without seeing contacts. */
-function maskPhone(phone?: string | null): string {
-  if (!phone) return '';
-  return phone.length <= 4 ? phone : `${'*'.repeat(phone.length - 4)}${phone.slice(-4)}`;
-}
 
 /**
  * GET /api/reports/sessions-export?chargePointId=&from=&to=
@@ -464,6 +528,10 @@ reportsRouter.get(
     if (Object.keys(stop).length) match.stopTimestamp = stop;
 
     const txs = await Transaction.find(match).sort({ stopTimestamp: 1 }).lean();
+    const [payInfoByTx, driverInfoByTag] = await Promise.all([
+      resolveSessionPayments(txs),
+      resolveSessionDrivers(txs),
+    ]);
 
     const tagIds = [...new Set(txs.map((t) => t.idTag).filter(Boolean))];
     const [tags, payments] = await Promise.all([
@@ -517,6 +585,8 @@ reportsRouter.get(
         id: t._id,
         connectorId: t.connectorId,
         idTag: t.idTag,
+        rfid: driverInfoByTag.get(t.idTag)?.rfid ?? '',
+        startedBy: driverInfoByTag.get(t.idTag)?.startedBy ?? 'UNKNOWN',
         driverName: driver?.name ?? tag?.ownerName ?? tag?.label ?? '',
         driverPhone: isClientUser ? maskPhone(phone) : phone,
         driverEmail: isClientUser ? '' : email,
@@ -544,6 +614,7 @@ reportsRouter.get(
         paymentProvider: payment?.provider ?? '',
         paymentStatus: payment?.status ?? '',
         paidAmount: payment ? round2(payment.paidAmount ?? 0) : null,
+        ...paymentFields(payInfoByTx.get(t._id)),
         ebarimtStatus: t.ebarimt?.status ?? '',
         ebarimtReceiptId: t.ebarimt?.receiptId ?? '',
         refundAmount: t.refund?.amount != null ? round2(t.refund.amount) : null,
