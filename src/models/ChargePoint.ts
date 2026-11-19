@@ -125,6 +125,32 @@ const chargePointSchema = new Schema(
     /** Overrides the client's e-barimt merchant for this station. Unset = inherit. */
     ebarimtMerchantId: { type: Schema.Types.ObjectId, ref: 'EbarimtMerchant' },
     tags: { type: [String], default: [] },
+
+    /**
+     * Electrical power and grid configuration for power monitoring, dynamic
+     * load management, and overload protection.
+     */
+    electricalConfig: {
+      ratedCapacityKW: { type: Number, default: 120 },
+      configuredGridLimitKW: { type: Number, default: 120 },
+      inputMeterAvailable: { type: Boolean, default: false },
+      inputMeterId: { type: String, trim: true },
+      powerSharingEnabled: { type: Boolean, default: true },
+      powerSharingMode: {
+        type: String,
+        enum: ['EQUAL', 'DYNAMIC_DEMAND', 'PRIORITY', 'FIFO'],
+        default: 'DYNAMIC_DEMAND',
+      },
+      maximumSimultaneousSessions: { type: Number, default: 2 },
+      warningThresholds: {
+        highUtilizationPct: { type: Number, default: 80 },
+        overloadPct: { type: Number, default: 95 },
+        underperformancePct: { type: Number, default: 50 },
+        minVoltageV: { type: Number, default: 320 },
+        maxVoltageV: { type: Number, default: 850 },
+        maxCurrentA: { type: Number, default: 250 },
+      },
+    },
   },
   {
     timestamps: true,

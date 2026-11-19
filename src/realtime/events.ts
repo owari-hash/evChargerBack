@@ -22,6 +22,8 @@ export type CsmsEventName =
   | 'wallet.debited'
   | 'command.result'
   | 'chargepoint.datatransfer'
+  | 'power.telemetry'
+  | 'power.alert'
   | 'ocpp.message';
 
 export interface CsmsEvent {

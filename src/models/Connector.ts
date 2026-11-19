@@ -32,6 +32,23 @@ const connectorSchema = new Schema(
     lastMeterWh: { type: Number },
     lastPowerW: { type: Number },
     lastSocPercent: { type: Number },
+    lastVoltageV: { type: Number },
+    lastCurrentA: { type: Number },
+    lastTemperatureC: { type: Number },
+    lastFrequencyHz: { type: Number },
+    lastTelemetryQuality: {
+      type: String,
+      enum: ['GOOD', 'STALE', 'SUSPECT', 'MISSING'],
+      default: 'GOOD',
+    },
+    lastTelemetryAt: { type: Date },
+
+    /** Electrical configuration for power monitoring and load allocation. */
+    ratedPowerKw: { type: Number, min: 0 },
+    maximumPowerKw: { type: Number, min: 0 },
+    maximumVoltage: { type: Number, default: 750 },
+    maximumCurrent: { type: Number, default: 250 },
+    configuredPowerLimitKw: { type: Number },
     /**
      * An in-flight RemoteStartTransaction this driver has not yet been
      * confirmed or refused for — set atomically by `remoteStart()` so a

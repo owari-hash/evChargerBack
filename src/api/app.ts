@@ -44,6 +44,7 @@ import { contactRouter } from './routes/contact.routes';
 import { feedbackAdminRouter } from './routes/feedback.routes';
 import { partnerRouter } from './routes/partner.routes';
 import { partnerMerchantsRouter } from './routes/partner-merchants.routes';
+import { powerMonitoringRouter } from './routes/powerMonitoring.routes';
 
 export function createApp(): Express {
   const app = express();
@@ -188,6 +189,7 @@ export function createApp(): Express {
   api.use('/feedback', feedbackAdminRouter);
   api.use('/partner', partnerRouter);
   api.use('/partner-merchants', partnerMerchantsRouter);
+  api.use('/power-monitoring', powerMonitoringRouter);
 
   app.use(base || '/', api);
 

@@ -2,6 +2,7 @@ import type { Types } from 'mongoose';
 import { MeterValue } from '../models/MeterValue';
 import { Transaction } from '../models/Transaction';
 import { Connector } from '../models/Connector';
+import { StationInputTelemetry } from '../models/StationInputTelemetry';
 import { bus } from '../realtime/events';
 import type { MeterValueEntry } from '../ocpp/schemas/common';
 import { applySessionCost, capCostToBalance } from './pricing.service';
@@ -9,6 +10,7 @@ import { env } from '../config/env';
 import { ocppLogger } from '../lib/logger';
 import { connectionManager } from '../ocpp/manager';
 import { resolveWalletOwnerForIdTag, balanceOf, isInternalTag } from './wallet.service';
+import { evaluateTelemetryAlerts } from './powerMonitoring.service';
 
 function toWh(value: number, unit?: string): number {
   return unit === 'kWh' ? value * 1000 : value;
@@ -22,6 +24,11 @@ interface Extracted {
   energyWh?: number;
   powerW?: number;
   socPercent?: number;
+  voltageV?: number;
+  currentA?: number;
+  temperatureC?: number;
+  frequencyHz?: number;
+  location?: string;
 }
 
 const PHASES = ['L1', 'L2', 'L3'];
@@ -61,6 +68,13 @@ function total(
 }
 
 function extract(entry: MeterValueEntry): Extracted {
+  const vMatch = entry.sampledValue.find((sv) => sv.measurand === 'Voltage' && Number.isFinite(Number(sv.value)));
+  const cMatch = entry.sampledValue.filter((sv) => sv.measurand === 'Current.Import' && Number.isFinite(Number(sv.value)));
+  const currentTotal = cMatch.length > 0 ? cMatch.reduce((sum, sv) => sum + Number(sv.value), 0) : undefined;
+  const tempMatch = entry.sampledValue.find((sv) => sv.measurand === 'Temperature' && Number.isFinite(Number(sv.value)));
+  const freqMatch = entry.sampledValue.find((sv) => sv.measurand === 'Frequency' && Number.isFinite(Number(sv.value)));
+  const inletMatch = entry.sampledValue.find((sv) => sv.location === 'Inlet');
+
   return {
     // Only the cumulative register says where the meter stands; an Interval
     // sample is a delta and would rewind the session's energy.
@@ -69,6 +83,11 @@ function extract(entry: MeterValueEntry): Extracted {
     socPercent: entry.sampledValue
       .filter((sv) => sv.measurand === 'SoC' && Number.isFinite(Number(sv.value)))
       .map((sv) => Number(sv.value))[0],
+    voltageV: vMatch ? Number(vMatch.value) : undefined,
+    currentA: currentTotal !== undefined ? Math.round(currentTotal * 10) / 10 : undefined,
+    temperatureC: tempMatch ? Number(tempMatch.value) : undefined,
+    frequencyHz: freqMatch ? Number(freqMatch.value) : undefined,
+    location: inletMatch ? 'Inlet' : entry.sampledValue[0]?.location,
   };
 }
 
@@ -100,12 +119,37 @@ export async function storeMeterValues(
 
   // Use the newest entry for the denormalised rollups.
   const latest = entries.reduce((a, b) => (a.timestamp > b.timestamp ? a : b));
-  const { energyWh, powerW, socPercent } = extract(latest);
+  const { energyWh, powerW, socPercent, voltageV, currentA, temperatureC, frequencyHz, location } = extract(latest);
 
-  const connectorUpdate: Record<string, unknown> = {};
+  // If this sample is from an upstream/inlet meter or connectorId 0, store station input telemetry
+  if (location === 'Inlet' || (connectorId === 0 && powerW !== undefined && powerW > 0)) {
+    const inputPowerKW = Math.round(((powerW ?? 0) / 1000) * 10) / 10;
+    const inputEnergyKWh = energyWh !== undefined ? Math.round((energyWh / 1000) * 10) / 10 : undefined;
+    void StationInputTelemetry.create({
+      chargePointId,
+      cpId,
+      timestamp: latest.timestamp,
+      inputPowerKW,
+      inputEnergyKWh,
+      voltageV,
+      currentA,
+      frequencyHz,
+      measurementSource: location === 'Inlet' ? 'OCPP_INLET' : 'STATION_CONNECTOR_0',
+      qualityStatus: 'GOOD',
+    }).catch(() => undefined);
+  }
+
+  const connectorUpdate: Record<string, unknown> = {
+    lastTelemetryAt: latest.timestamp,
+    lastTelemetryQuality: 'GOOD',
+  };
   if (energyWh !== undefined) connectorUpdate.lastMeterWh = energyWh;
   if (powerW !== undefined) connectorUpdate.lastPowerW = powerW;
   if (socPercent !== undefined) connectorUpdate.lastSocPercent = socPercent;
+  if (voltageV !== undefined) connectorUpdate.lastVoltageV = voltageV;
+  if (currentA !== undefined) connectorUpdate.lastCurrentA = currentA;
+  if (temperatureC !== undefined) connectorUpdate.lastTemperatureC = temperatureC;
+  if (frequencyHz !== undefined) connectorUpdate.lastFrequencyHz = frequencyHz;
 
   if (Object.keys(connectorUpdate).length > 0) {
     await Connector.updateOne(
@@ -274,5 +318,29 @@ export async function storeMeterValues(
     powerW,
     socPercent,
     sampledValue: latest.sampledValue,
+  });
+
+  // Evaluate operational power and electrical thresholds for alerts
+  void evaluateTelemetryAlerts({
+    chargePointId,
+    cpId,
+    connectorId,
+    activePowerKw: (powerW ?? 0) / 1000,
+    voltageV,
+    currentA,
+    timestamp: new Date(latest.timestamp),
+  }).catch(() => undefined);
+
+  // Broadcast real-time power telemetry to monitoring clients
+  bus.emitEvent('power.telemetry', cpId, {
+    connectorId,
+    transactionId: transactionId ?? null,
+    timestamp: latest.timestamp,
+    powerKw: powerW !== undefined ? Math.round((powerW / 1000) * 10) / 10 : undefined,
+    energyKwh: energyWh !== undefined ? Math.round((energyWh / 1000) * 10) / 10 : undefined,
+    socPercent,
+    voltageV,
+    currentA,
+    temperatureC,
   });
 }

@@ -29,4 +29,6 @@ export * from './Feedback';
 export * from './PartnerMerchant';
 export * from './PartnerRefreshToken';
 export * from './PartnerApiLog';
+export * from './StationInputTelemetry';
+export * from './PowerAlert';
 export { Counter, nextSequence, ensureSequenceAtLeast } from '../lib/counters';
