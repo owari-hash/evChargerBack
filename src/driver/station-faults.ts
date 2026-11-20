@@ -194,13 +194,19 @@ const OCPP_RULES: Partial<Record<string, StationFaultKind>> = {
   PowerSwitchFailure: 'power_supply',
 };
 
+/** The vendor code, or '' when it is a placeholder ("NotDefined", "0"…) that says nothing. */
+export function meaningfulVendorCode(vendorErrorCode?: string | null): string {
+  const vendor = (vendorErrorCode ?? '').trim();
+  return /^(notdefined|none|noerror|0)$/i.test(vendor) ? '' : vendor;
+}
+
 export function describeStationFault(errorCode?: string | null, vendorErrorCode?: string | null): StationFault | null {
   const ocpp = (errorCode ?? '').trim();
   const vendor = (vendorErrorCode ?? '').trim();
   if ((!ocpp || ocpp === 'NoError') && !vendor) return null;
 
   let kind: StationFaultKind | undefined;
-  if (vendor && !/^(notdefined|none|noerror|0)$/i.test(vendor)) {
+  if (meaningfulVendorCode(vendor)) {
     kind = VENDOR_RULES.find(([re]) => re.test(vendor))?.[1];
   }
   kind ??= OCPP_RULES[ocpp] ?? 'station_fault';
@@ -234,4 +240,43 @@ export function sessionFault(tx: {
   const nearStop = at !== undefined && stop !== undefined && stop - at <= RELEVANT_BEFORE_STOP_MS;
 
   return barelyCharged || nearStop ? fault : null;
+}
+
+/** What the admin console shows operators about a session's station error. */
+export interface OperatorStationFault {
+  kind: StationFaultKind;
+  /** OCPP errorCode (usually the uninformative "OtherError"). */
+  errorCode: string;
+  /** The vendor's own code ("BMSBatteryTemperatureFault"), or '' when none. */
+  vendorErrorCode: string;
+  vehicleSide: boolean;
+  title: string;
+  titleEn: string;
+  body: string;
+  at: Date | null;
+  /** True when the error is what ended the session (same rule the driver app uses). */
+  endedSession: boolean;
+}
+
+/**
+ * Operator view of the error a station reported on a session. Unlike
+ * sessionFault this keeps errors that did not end the session too, flagged
+ * with endedSession, since operators want to see every report.
+ */
+export function operatorStationFault(tx: Parameters<typeof sessionFault>[0]): OperatorStationFault | null {
+  const err = tx.stationError;
+  if (!err) return null;
+  const fault = describeStationFault(err.errorCode, err.vendorErrorCode);
+  if (!fault) return null;
+  return {
+    kind: fault.kind,
+    errorCode: err.errorCode ?? '',
+    vendorErrorCode: err.vendorErrorCode ?? '',
+    vehicleSide: fault.vehicleSide,
+    title: fault.mn.title,
+    titleEn: fault.en.title,
+    body: fault.mn.body,
+    at: err.at ?? null,
+    endedSession: sessionFault(tx) !== null,
+  };
 }

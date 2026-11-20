@@ -11,6 +11,7 @@ export const POWER_ALERT_TYPES = [
   'TELEMETRY_MISSING',
   'UNEXPECTED_TERMINATION',
   'POWER_FLUCTUATION',
+  'REPEATED_STATION_FAULT',
 ] as const;
 export type PowerAlertType = (typeof POWER_ALERT_TYPES)[number];
 

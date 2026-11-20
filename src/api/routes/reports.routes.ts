@@ -12,6 +12,7 @@ import { Transaction } from '../../models/Transaction';
 import { resolveSessionPayments, type SessionPaymentInfo } from '../../services/session-payment.service';
 import { maskPhone, resolveSessionDrivers, type SessionDriverInfo } from '../../services/session-driver.service';
 import { asyncHandler, requireAuth, validate } from '../middleware';
+import { describeStationFault } from '../../driver/station-faults';
 
 export const reportsRouter = Router();
 reportsRouter.use(requireAuth);
@@ -612,6 +613,9 @@ reportsRouter.get(
         ebarimtReceiptId: t.ebarimt?.receiptId ?? '',
         refundAmount: t.refund?.amount != null ? round2(t.refund.amount) : null,
         stationError: t.stationError?.errorCode ?? '',
+        stationErrorVendorCode: t.stationError?.vendorErrorCode ?? '',
+        stationErrorTitle:
+          describeStationFault(t.stationError?.errorCode, t.stationError?.vendorErrorCode)?.mn.title ?? '',
       };
     });
 

@@ -18,6 +18,7 @@ import {
 import type * as core from '../schemas/core';
 import type { ChargePointConnection } from '../connection';
 import { ensureConnectorCode } from '../../services/connector.service';
+import { checkRepeatedStationFault } from '../../services/station-fault-alerts.service';
 
 type Req<T extends z.ZodTypeAny> = z.output<T>;
 
@@ -233,7 +234,7 @@ export async function onStatusNotification(
   // Keep the error on the running session so the driver can be told why it
   // stopped — the connector's own status is overwritten moments later.
   if (payload.connectorId > 0 && payload.errorCode !== 'NoError') {
-    await Transaction.updateOne(
+    const stored = await Transaction.updateOne(
       { chargePointId: conn.ref, connectorId: payload.connectorId, status: 'Active' },
       {
         $set: {
@@ -245,6 +246,17 @@ export async function onStatusNotification(
         },
       },
     ).catch(() => undefined);
+    // The same vendor fault on one gun across several sessions points to hardware.
+    if (stored?.modifiedCount) {
+      await checkRepeatedStationFault({
+        chargePointId: conn.ref,
+        cpId: conn.cpId,
+        connectorId: payload.connectorId,
+        errorCode: payload.errorCode,
+        vendorErrorCode: payload.vendorErrorCode,
+        at: timestamp,
+      }).catch((err: unknown) => ocppLogger.warn({ err, cp: conn.cpId }, 'repeated-fault check failed'));
+    }
   }
 
   if (payload.connectorId > 0) {

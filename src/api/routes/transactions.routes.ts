@@ -12,6 +12,7 @@ import { closeFromLastMeter } from '../../services/transaction.service';
 import { refundTransaction } from '../../services/refund.service';
 import { issueEBarimtForTransaction } from '../../services/ebarimt.service';
 import { store } from '../../driver/store';
+import { operatorStationFault } from '../../driver/station-faults';
 import {
   asyncHandler,
   paginate,
@@ -120,6 +121,7 @@ transactionsRouter.get(
           cpId: cp?.cpId,
           chargePointName: cp?.name || cp?.cpId,
           chargePoint: cp ? { id: String(cp._id), cpId: cp.cpId, name: cp.name } : null,
+          stationFault: operatorStationFault(t),
         };
       }),
       total,
@@ -168,6 +170,7 @@ transactionsRouter.get(
           cpId: cp?.cpId,
           chargePointName: cp?.name || cp?.cpId,
           chargePoint: cp ? { id: String(cp._id), cpId: cp.cpId, name: cp.name } : null,
+          stationFault: operatorStationFault(t),
         };
       }),
     );
@@ -204,6 +207,7 @@ transactionsRouter.get(
       cpId: cp?.cpId,
       chargePointName: cp?.name || cp?.cpId,
       chargePoint: cp ? { id: String(cp._id), cpId: cp.cpId, name: cp.name } : null,
+      stationFault: operatorStationFault(tx),
     });
   }),
 );
