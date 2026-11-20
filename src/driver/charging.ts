@@ -1,6 +1,7 @@
 import { findChargePoint, requireChargePoint } from '../lib/chargePointRef';
 import { badRequest, notFound } from '../lib/errors';
 import { DriverError, driverLogger } from './http';
+import { sessionFault } from './station-faults';
 import { env } from '../config/env';
 import { HttpError } from '../lib/errors';
 import { Reservation } from '../models/Reservation';
@@ -537,7 +538,7 @@ interface RawTransaction {
   tariffPerKwh?: number;
   /** The station's time-of-day zones as they were when the session started. */
   tariffZones?: TariffZone[];
-  stationError?: { errorCode?: string; vendorErrorCode?: string };
+  stationError?: { errorCode?: string; vendorErrorCode?: string; at?: Date };
 }
 
 /**
@@ -584,6 +585,7 @@ function toSession(tx: RawTransaction): ChargingSession {
     lastSocPercent: tx.lastSocPercent,
     stopReason: tx.stopReason ?? undefined,
     plugError: hadPlugError(tx) || undefined,
+    stationFault: sessionFault(tx) ?? undefined,
     ebarimt: tx.ebarimt as EBarimtData | undefined,
     ebarimtRequest: tx.ebarimtRequest?.type
       ? {

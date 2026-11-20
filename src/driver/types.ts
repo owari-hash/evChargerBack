@@ -3,6 +3,9 @@
  * parse these, so a field renamed here breaks two clients at once.
  */
 
+import type { StationFault } from './station-faults';
+export type { StationFault };
+
 export const CONNECTOR_TYPES = ['Type2', 'CCS2', 'CHAdeMO', 'GBT', 'Type1', 'Schuko'] as const;
 export type ConnectorType = (typeof CONNECTOR_TYPES)[number];
 
@@ -151,6 +154,11 @@ export interface ChargingSession {
   stopReason?: string;
   /** The station could not confirm the gun was connected; nothing was charged. */
   plugError?: boolean;
+  /**
+   * Finished sessions only: the station fault that ended (or prevented) the
+   * charge, with ready-to-show text in Mongolian and English.
+   */
+  stationFault?: StationFault;
   ebarimt?: EBarimtData;
   /** The receipt chosen at start; issued automatically when the session ends. */
   ebarimtRequest?: {
