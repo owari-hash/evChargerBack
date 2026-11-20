@@ -11,6 +11,7 @@ import {
   getStationPowerDetail,
   getHistoricalPowerAnalytics,
 } from '../../services/powerMonitoring.service';
+import { getStationPowerStats, StatsRangeError } from '../../services/stationPowerStats.service';
 import {
   asyncHandler,
   requireAuth,
@@ -94,6 +95,37 @@ powerMonitoringRouter.get(
       to: q.to,
     });
     res.json(analytics);
+  }),
+);
+
+const statsQuery = z.object({
+  from: z.coerce.date(),
+  to: z.coerce.date(),
+});
+
+/**
+ * GET /api/power-monitoring/stations/:id/stats?from=&to=
+ * Peak / average / low kW per day and per gun, and how guns share power
+ * when they charge at the same time. Range up to 31 days.
+ */
+powerMonitoringRouter.get(
+  '/stations/:id/stats',
+  validate(statsQuery, 'query'),
+  asyncHandler(async (req, res) => {
+    const q = req.query as unknown as z.infer<typeof statsQuery>;
+    try {
+      const stats = await getStationPowerStats({
+        stationRef: req.params.id,
+        from: q.from,
+        to: q.to,
+        clientFilter: extractClientFilter(req.user),
+      });
+      if (!stats) throw notFound('Station not found');
+      res.json(stats);
+    } catch (err) {
+      if (err instanceof StatsRangeError) throw badRequest(err.message);
+      throw err;
+    }
   }),
 );
 
